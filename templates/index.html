@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+
+{% block title %}Home - {% endblock %}
+
+{% block content %}
+<div class="hero">
+    <h1>{{ message }}</h1>
+    <p>Your high-performance async web framework is ready!</p>
+    
+    <div class="demo-stats">
+        <div class="stat">
+            <span class="stat-number">⚡</span>
+            <span class="stat-label">RSGI Powered</span>
+        </div>
+        <div class="stat">
+            <span class="stat-number">🔄</span>
+            <span class="stat-label">Background Tasks</span>
+        </div>
+        <div class="stat">
+            <span class="stat-number">🌐</span>
+            <span class="stat-label">WebSocket Support</span>
+        </div>
+        <div class="stat">
+            <span class="stat-number">🛡️</span>
+            <span class="stat-label">Security Built-in</span>
+        </div>
+    </div>
+</div>
+
+<div class="features-section">
+    <h2>Framework Features</h2>
+    <div class="features-grid">
+        {% for feature in features %}
+        <div class="feature-card">
+            <div class="feature-icon">✨</div>
+            <div class="feature-text">{{ feature }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="demo-section">
+    <h2>Interactive Demos</h2>
+    <div class="demo-grid">
+        <div class="demo-card">
+            <h3>🔥 API Endpoints</h3>
+            <p>Test the REST API endpoints with different HTTP methods</p>
+            <div class="demo-buttons">
+                <button onclick="testHealthEndpoint()">Health Check</button>
+                <button onclick="testCreateUser()">Create User</button>
+                <button onclick="testGetUser()">Get User</button>
+            </div>
+        </div>
+        
+        <div class="demo-card">
+            <h3>⚙️ Background Tasks</h3>
+            <p>Queue and monitor background tasks with different priorities</p>
+            <div class="demo-buttons">
+                <button onclick="openTasksModal()">Open Task Demo</button>
+            </div>
+        </div>
+        
+        <div class="demo-card">
+            <h3>🌐 WebSocket</h3>
+            <p>Real-time communication with WebSocket connections</p>
+            <div class="demo-buttons">
+                <button onclick="openWebSocketDemo()">Open WebSocket Demo</button>
+            </div>
+        </div>
+        
+        <div class="demo-card">
+            <h3>📊 Analytics Dashboard</h3>
+            <p>Data-intensive dashboard showcasing Rust template engine streaming capabilities</p>
+            <div class="demo-buttons">
+                <button onclick="location.href='/dashboard'">View Dashboard</button>
+                {% if template_engine_info.using_rust %}
+                <small style="color: #e74c3c; font-weight: bold;">🦀 Rust Streaming Active</small>
+                {% else %}
+                <small style="color: #95a5a6;">📄 Standard Rendering</small>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="demo-card">
+            <h3>🛡️ Security Features</h3>
+            <p>CSRF protection, rate limiting, and security headers</p>
+            <div class="demo-buttons">
+                <button onclick="testRateLimit()">Test Rate Limit</button>
+                <button onclick="showSecurityHeaders()">Show Security Headers</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Template Engine Performance Section -->
+{% if template_engine_info.using_rust %}
+<div class="performance-highlight">
+    <div class="performance-content">
+        <h3>🦀 Rust Template Engine Active</h3>
+        <p>This application is powered by the high-performance Rust template engine with streaming capabilities.</p>
+        <div class="performance-stats">
+            <div class="perf-stat">
+                <strong>{% if template_engine_info.cache_stats %}{{ template_engine_info.cache_stats.template_cache_size }}{% else %}3{% endif %}</strong>
+                <span>Templates Cached</span>
+            </div>
+            <div class="perf-stat">
+                <strong>Streaming</strong>
+                <span>Enabled</span>
+            </div>
+            <div class="perf-stat">
+                <strong>{{ features | length }}</strong>
+                <span>Features Available</span>
+            </div>
+        </div>
+        <p><small>🚀 The dashboard demonstrates data-intensive rendering with 150+ data points for optimal performance comparison.</small></p>
+    </div>
+</div>
+{% endif %}
+
+<div id="output" class="output-section">
+    <h3>Demo Output</h3>
+    <div id="outputContent">
+        <p class="placeholder">Click any demo button to see results here...</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// API Demo Functions
+async function testHealthEndpoint() {
+    showOutput('Testing health endpoint...');
+    try {
+        const response = await fetch('/api/health');
+        const data = await response.json();
+        showOutput(`✅ Health Check Success:\n${JSON.stringify(data, null, 2)}`);
+    } catch (error) {
+        showOutput(`❌ Health Check Error: ${error.message}`);
+    }
+}
+
+async function testCreateUser() {
+    showOutput('Creating new user...');
+    try {
+        const userData = {
+            name: `Demo User ${Date.now()}`,
+            email: `demo${Date.now()}@example.com`
+        };
+        
+        const response = await fetch('/api/users', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+            },
+            body: JSON.stringify(userData)
+        });
+        
+        const data = await response.json();
+        showOutput(`✅ User Created:\n${JSON.stringify(data, null, 2)}`);
+    } catch (error) {
+        showOutput(`❌ Create User Error: ${error.message}`);
+    }
+}
+
+async function testGetUser() {
+    showOutput('Getting user information...');
+    try {
+        const userId = '12345';
+        const response = await fetch(`/users/${userId}`);
+        const data = await response.json();
+        showOutput(`✅ User Retrieved:\n${JSON.stringify(data, null, 2)}`);
+    } catch (error) {
+        showOutput(`❌ Get User Error: ${error.message}`);
+    }
+}
+
+async function testRateLimit() {
+    showOutput('Testing rate limiting (making 5 quick requests)...');
+    
+    for (let i = 1; i <= 5; i++) {
+        try {
+            const response = await fetch('/api/health');
+            const data = await response.json();
+            
+            if (response.ok) {
+                showOutput(`Request ${i}: ✅ Success (${response.headers.get('x-ratelimit-remaining')} remaining)`);
+            } else {
+                showOutput(`Request ${i}: ❌ Rate limited (${response.status})`);
+            }
+        } catch (error) {
+            showOutput(`Request ${i}: ❌ Error: ${error.message}`);
+        }
+        
+        // Small delay between requests
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+}
+
+async function showSecurityHeaders() {
+    showOutput('Checking security headers...');
+    try {
+        const response = await fetch('/api/health');
+        const headers = {};
+        
+        // Security headers to check
+        const securityHeaders = [
+            'x-content-type-options',
+            'x-frame-options', 
+            'x-xss-protection',
+            'strict-transport-security',
+            'referrer-policy',
+            'x-powered-by',
+            'x-request-id'
+        ];
+        
+        securityHeaders.forEach(header => {
+            const value = response.headers.get(header);
+            if (value) {
+                headers[header] = value;
+            }
+        });
+        
+        showOutput(`🛡️ Security Headers:\n${JSON.stringify(headers, null, 2)}`);
+    } catch (error) {
+        showOutput(`❌ Security Headers Error: ${error.message}`);
+    }
+}
+
+function showOutput(message) {
+    const outputContent = document.getElementById('outputContent');
+    const timestamp = new Date().toLocaleTimeString();
+    outputContent.innerHTML = `<div class="output-message">
+        <span class="timestamp">[${timestamp}]</span>
+        <pre>${message}</pre>
+    </div>`;
+    
+    // Scroll to output
+    document.getElementById('output').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+{% endblock %}

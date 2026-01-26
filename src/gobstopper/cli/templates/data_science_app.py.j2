@@ -1,0 +1,284 @@
+"""
+{{ project.name }} - Data Science API
+Built with Gobstopper Framework
+"""
+
+import asyncio
+from gobstopper import Gobstopper
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+from gobstopper.tasks.queue import TaskPriority
+
+# Import project modules
+from models import ml_models, schemas
+from data import processors, validators
+from api.endpoints import predict, train, data
+from tasks import training, data_sync, feature_engineering
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize templates
+app.init_templates("frontend/templates", use_rust=True)
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(secret_key=settings.SECRET_KEY), priority=100)
+app.add_middleware(
+    CORSMiddleware(
+        origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True
+    ),
+    priority=95
+)
+app.add_middleware(
+    RustStaticMiddleware(
+        directory="frontend/static",
+        url_prefix="/static"
+    ),
+    priority=90
+)
+
+# Context processors
+@app.context_processor
+def inject_app_info():
+    return {
+        "app_name": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT
+    }
+
+# Register ML model tasks
+@app.task("train_model", category="ml")
+async def train_model_task(model_type: str, dataset_id: str, hyperparameters: dict):
+    """Background task for model training"""
+    return await training.train_model(model_type, dataset_id, hyperparameters)
+
+@app.task("preprocess_data", category="data")
+async def preprocess_data_task(dataset_id: str, preprocessing_config: dict):
+    """Background task for data preprocessing"""
+    return await data_sync.preprocess_dataset(dataset_id, preprocessing_config)
+
+@app.task("feature_engineering", category="data")
+async def feature_engineering_task(dataset_id: str, feature_config: dict):
+    """Background task for feature engineering"""
+    return await feature_engineering.generate_features(dataset_id, feature_config)
+
+@app.task("evaluate_model", category="ml")
+async def evaluate_model_task(model_id: str, test_dataset_id: str):
+    """Background task for model evaluation"""
+    return await training.evaluate_model(model_id, test_dataset_id)
+
+# API Routes
+@app.get("/")
+async def index(request):
+    """Landing page with API documentation"""
+    return await app.render_template("index.html", 
+        endpoints={{ usecase.endpoints }},
+        features={{ project.features }}
+    )
+
+@app.get("/api/v1/health")
+async def health_check(request):
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "ml_models_loaded": ml_models.get_loaded_models()
+    }
+
+# Prediction endpoints
+@app.post("/api/v1/predict")
+async def make_prediction(request):
+    """Make prediction using trained model"""
+    data = await request.get_json()
+    
+    # Validate input
+    validated = validators.validate_prediction_input(data)
+    if not validated.is_valid:
+        return {"error": validated.errors}, 400
+    
+    # Get prediction
+    result = await predict.predict(
+        model_id=data.get("model_id"),
+        features=data.get("features")
+    )
+    
+    return result
+
+@app.post("/api/v1/predict/batch")
+async def batch_prediction(request):
+    """Batch prediction endpoint"""
+    data = await request.get_json()
+    
+    # Queue batch prediction task
+    task_id = await app.add_background_task(
+        "batch_predict",
+        category="ml",
+        priority=TaskPriority.HIGH,
+        dataset_id=data.get("dataset_id"),
+        model_id=data.get("model_id")
+    )
+    
+    return {"task_id": task_id, "status": "queued"}
+
+# Training endpoints
+@app.post("/api/v1/train")
+async def train_model(request):
+    """Train a new model"""
+    data = await request.get_json()
+    
+    # Validate training request
+    validated = validators.validate_training_request(data)
+    if not validated.is_valid:
+        return {"error": validated.errors}, 400
+    
+    # Queue training task
+    task_id = await app.add_background_task(
+        "train_model",
+        category="ml",
+        priority=TaskPriority.NORMAL,
+        model_type=data.get("model_type"),
+        dataset_id=data.get("dataset_id"),
+        hyperparameters=data.get("hyperparameters", {})
+    )
+    
+    return {
+        "task_id": task_id,
+        "status": "training_queued",
+        "estimated_time": "varies based on dataset size"
+    }
+
+# Model management
+@app.get("/api/v1/models")
+async def list_models(request):
+    """List available models"""
+    return await ml_models.list_models()
+
+@app.get("/api/v1/models/<model_id>")
+async def get_model_info(request, model_id: str):
+    """Get model information"""
+    model = await ml_models.get_model(model_id)
+    if not model:
+        return {"error": "Model not found"}, 404
+    return model.to_dict()
+
+@app.delete("/api/v1/models/<model_id>")
+async def delete_model(request, model_id: str):
+    """Delete a model"""
+    success = await ml_models.delete_model(model_id)
+    if success:
+        return {"message": "Model deleted"}
+    return {"error": "Model not found"}, 404
+
+# Data management
+@app.post("/api/v1/data/upload")
+async def upload_dataset(request):
+    """Upload dataset for training/prediction"""
+    # Handle file upload
+    form = await request.get_form()
+    file_data = form.get("file")
+    
+    # Process and store dataset
+    dataset_id = await data.store_dataset(file_data)
+    
+    # Queue preprocessing
+    task_id = await app.add_background_task(
+        "preprocess_data",
+        category="data",
+        priority=TaskPriority.NORMAL,
+        dataset_id=dataset_id,
+        preprocessing_config={}
+    )
+    
+    return {
+        "dataset_id": dataset_id,
+        "preprocessing_task_id": task_id,
+        "status": "processing"
+    }
+
+@app.get("/api/v1/data/<dataset_id>")
+async def get_dataset_info(request, dataset_id: str):
+    """Get dataset information"""
+    return await data.get_dataset_info(dataset_id)
+
+# Task monitoring
+@app.get("/api/v1/tasks/<task_id>")
+async def get_task_status(request, task_id: str):
+    """Get task status"""
+    task_info = await app.task_queue.get_task_info(task_id)
+    if not task_info:
+        return {"error": "Task not found"}, 404
+    
+    return {
+        "task_id": task_info.id,
+        "status": task_info.status.value,
+        "progress": task_info.progress,
+        "message": task_info.progress_message,
+        "result": task_info.result if task_info.is_completed else None
+    }
+
+# WebSocket endpoint for real-time training updates
+@app.websocket("/ws/training/<task_id>")
+async def training_updates(websocket, task_id: str):
+    """WebSocket for real-time training progress"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            task_info = await app.task_queue.get_task_info(task_id)
+            if not task_info:
+                await websocket.send_json({
+                    "error": "Task not found"
+                })
+                break
+            
+            await websocket.send_json({
+                "task_id": task_id,
+                "status": task_info.status.value,
+                "progress": task_info.progress,
+                "message": task_info.progress_message,
+                "metrics": task_info.result.get("metrics") if task_info.result else None
+            })
+            
+            if task_info.is_completed:
+                break
+                
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        app.logger.error(f"WebSocket error: {e}")
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize application on startup"""
+    # Load pre-trained models
+    await ml_models.load_pretrained_models()
+    
+    # Start background workers
+    await app.start_task_workers("ml", worker_count=2)
+    await app.start_task_workers("data", worker_count=3)
+    
+    # Initialize database connections
+    await processors.initialize_connections()
+    
+    app.logger.info(f"🚀 {{ project.name }} started successfully")
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    await processors.close_connections()
+    await app.task_queue.shutdown()
+    app.logger.info("👋 {{ project.name }} shutting down")
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("{{ project.name }} - Data Science API")
+    print("=" * 50)
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"API Documentation: http://localhost:8000")
+    print(f"Health Check: http://localhost:8000/api/v1/health")

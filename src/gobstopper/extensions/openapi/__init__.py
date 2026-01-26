@@ -1,0 +1,288 @@
+"""OpenAPI 3.1 Extension for Gobstopper Framework.
+
+This extension provides comprehensive OpenAPI 3.1 specification generation and
+interactive API documentation for Gobstopper applications. It supports type-safe schema
+generation from Python dataclasses, TypedDict, and msgspec.Struct models.
+
+The extension automatically generates:
+    - OpenAPI 3.1 JSON specification at /openapi.json
+    - ReDoc interactive documentation at /redoc
+    - Stoplight Elements API documentation at /elements
+
+Features:
+    - Automatic schema generation from Python type hints
+    - Support for dataclasses, TypedDict, and msgspec.Struct
+    - Rich metadata via decorators (@doc, @response, @request_body, @param)
+    - Path parameter extraction from route patterns
+    - Request/response model validation schemas
+    - Security scheme definitions
+    - Tag-based operation grouping
+    - External documentation links
+
+Basic Usage:
+    >>> from gobstopper import Gobstopper
+    >>> from gobstopper.extensions.openapi import attach_openapi
+    >>> from gobstopper.extensions.openapi.decorators import doc, response
+    >>>
+    >>> app = Gobstopper(__name__)
+    >>> attach_openapi(app, title="My API", version="1.0.0")
+    >>>
+    >>> @app.get("/users/<int:id>")
+    >>> @doc(summary="Get user by ID", tags=["Users"])
+    >>> @response(200, description="User found", model=User)
+    >>> async def get_user(request, id: int):
+    ...     return JSONResponse({"id": id, "name": "John"})
+
+Advanced Usage with Models:
+    >>> from dataclasses import dataclass
+    >>> from typing import Optional
+    >>>
+    >>> @dataclass
+    >>> class User:
+    ...     id: int
+    ...     name: str
+    ...     email: Optional[str] = None
+    >>>
+    >>> @app.post("/users")
+    >>> @doc(summary="Create user", tags=["Users"])
+    >>> @request_body(model=User, description="User data")
+    >>> @response(201, description="User created", model=User)
+    >>> async def create_user(request):
+    ...     data = await request.json()
+    ...     return JSONResponse(data, status=201)
+
+See Also:
+    - OpenAPI 3.1 Specification: https://spec.openapis.org/oas/v3.1.0
+    - decorators: Rich metadata decorators for routes
+    - generator: Core OpenAPI spec generation logic
+    - ui: Interactive documentation UI generators
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from ...http.response import JSONResponse, Response
+from .generator import OpenAPIGenerator, build_default_info
+from .ui import redoc_html, stoplight_elements_html, scalar_html
+from .decorators import doc, response, request_body, param, security
+
+__all__ = [
+    "attach_openapi",
+    "OpenAPIGenerator",
+    "build_default_info",
+    "doc",
+    "response",
+    "request_body",
+    "param",
+    "security",
+]
+
+
+class OpenAPIState:
+    """Internal state management for OpenAPI specification caching.
+
+    This class maintains the OpenAPI configuration and caches the generated
+    specification to avoid repeated generation on each request.
+
+    Attributes:
+        config: OpenAPI configuration dictionary containing info, servers, etc.
+        _cache: Cached OpenAPI specification dict, None if not yet generated.
+
+    Note:
+        The cache is automatically invalidated when routes are modified.
+        Call invalidate() manually if configuration changes at runtime.
+    """
+
+    def __init__(self, config: dict[str, Any]):
+        """Initialize OpenAPI state with configuration.
+
+        Args:
+            config: OpenAPI configuration dictionary with keys like 'openapi',
+                'info', 'servers', 'tags', etc.
+        """
+        self.config = config
+        self._cache: Optional[dict[str, Any]] = None
+
+    def invalidate(self):
+        """Clear the cached OpenAPI specification.
+
+        Forces regeneration on the next request to /openapi.json.
+        Useful when routes or metadata are modified at runtime.
+        """
+        self._cache = None
+
+
+DEFAULT_OPENAPI_VERSION = "3.1.0"
+
+
+def attach_openapi(
+    app,
+    *,
+    title: str = "Gobstopper Service",
+    version: str = "0.1.0",
+    description: str | None = None,
+    terms_of_service: str | None = None,
+    contact: dict | None = None,
+    license: dict | None = None,
+    servers: list[dict] | None = None,
+    tags: list[dict] | None = None,
+    external_docs: dict | None = None,
+    components: dict | None = None,
+    security: list[dict] | None = None,
+    openapi: str = DEFAULT_OPENAPI_VERSION,
+    enable_redoc: bool = True,
+    enable_elements: bool = True,
+):
+    """Attach OpenAPI 3.1 specification generation and documentation UI to a Gobstopper app.
+
+    This function registers three endpoints on your application:
+        - GET /openapi.json: Returns the OpenAPI 3.1 specification in JSON format
+        - GET /redoc: Interactive API documentation using ReDoc (if enabled)
+        - GET /elements: Interactive API documentation using Stoplight Elements (if enabled)
+
+    The OpenAPI specification is generated by introspecting decorated route handlers
+    and collecting metadata from @doc, @response, @request_body, @param, and @security
+    decorators. The specification is cached after first generation.
+
+    Args:
+        app: The Gobstopper application instance to attach OpenAPI to.
+        title: API title shown in documentation. Defaults to "Gobstopper Service".
+        version: API version string (semantic versioning recommended).
+            Defaults to "0.1.0".
+        description: Markdown-formatted description of the API. Optional.
+        terms_of_service: URL to the terms of service. Optional.
+        contact: Contact information dict with keys: name, url, email. Optional.
+            Example: {"name": "API Support", "email": "support@example.com"}
+        license: License information dict with keys: name, url. Optional.
+            Example: {"name": "Apache 2.0", "url": "https://www.apache.org/licenses/"}
+        servers: List of server objects with url and description. Optional.
+            Example: [{"url": "https://api.example.com", "description": "Production"}]
+        tags: List of tag objects for grouping operations. Optional.
+            Example: [{"name": "Users", "description": "User management"}]
+        external_docs: External documentation object with url and description. Optional.
+            Example: {"url": "https://docs.example.com", "description": "Full docs"}
+        components: Reusable components (schemas, responses, parameters, etc.). Optional.
+            Will be merged with auto-generated schemas from type adapters.
+        security: Global security requirements. Optional.
+            Example: [{"bearerAuth": []}]
+        openapi: OpenAPI specification version string. Defaults to "3.1.0".
+        enable_redoc: Enable ReDoc UI at /redoc. Defaults to True.
+        enable_elements: Enable Stoplight Elements UI at /elements. Defaults to True.
+
+    Returns:
+        OpenAPIState: State object with config and cache. Accessible as app.openapi.
+            Use app.openapi.invalidate() to force spec regeneration.
+
+    Example:
+        Basic setup::
+
+            from gobstopper import Gobstopper
+            from gobstopper.extensions.openapi import attach_openapi
+
+            app = Gobstopper(__name__)
+            attach_openapi(
+                app,
+                title="My API",
+                version="1.0.0",
+                description="A fantastic API"
+            )
+
+    Example:
+        Complete setup with all options::
+
+            attach_openapi(
+                app,
+                title="User Management API",
+                version="2.0.0",
+                description="Comprehensive user and auth management",
+                terms_of_service="https://example.com/terms",
+                contact={"name": "API Team", "email": "api@example.com"},
+                license={"name": "MIT", "url": "https://opensource.org/licenses/MIT"},
+                servers=[
+                    {"url": "https://api.example.com", "description": "Production"},
+                    {"url": "https://staging.example.com", "description": "Staging"}
+                ],
+                tags=[
+                    {"name": "Users", "description": "User operations"},
+                    {"name": "Auth", "description": "Authentication"}
+                ],
+                external_docs={
+                    "url": "https://docs.example.com",
+                    "description": "Full documentation"
+                },
+                components={
+                    "securitySchemes": {
+                        "bearerAuth": {
+                            "type": "http",
+                            "scheme": "bearer",
+                            "bearerFormat": "JWT"
+                        }
+                    }
+                },
+                security=[{"bearerAuth": []}]
+            )
+
+    Example:
+        Using with decorators::
+
+            from gobstopper.extensions.openapi.decorators import doc, response
+
+            @app.get("/users/<int:id>")
+            @doc(summary="Get user", tags=["Users"])
+            @response(200, description="User found", model=User)
+            @response(404, description="User not found")
+            async def get_user(request, id: int):
+                return JSONResponse({"id": id, "name": "John"})
+
+    Note:
+        - Swagger UI is intentionally NOT included. Use ReDoc or Stoplight Elements instead.
+        - Only routes with OpenAPI decorators are included in the specification.
+        - The specification is cached; call app.openapi.invalidate() to refresh.
+        - Path parameters are automatically extracted from route patterns.
+        - Type adapters handle dataclasses, TypedDict, and msgspec.Struct models.
+
+    See Also:
+        - decorators module: @doc, @response, @request_body, @param, @security
+        - OpenAPI 3.1 Spec: https://spec.openapis.org/oas/v3.1.0
+        - ReDoc: https://redocly.github.io/redoc/
+        - Stoplight Elements: https://stoplight.io/open-source/elements
+    """
+    config: dict[str, Any] = {
+        "openapi": openapi,
+        "info": build_default_info(title, version, description, terms_of_service, contact, license),
+    }
+    if servers:
+        config["servers"] = servers
+    if tags:
+        config["tags"] = tags
+    if external_docs:
+        config["externalDocs"] = external_docs
+    if components:
+        config["components"] = components
+    if security:
+        config["security"] = security
+
+    state = OpenAPIState(config)
+
+    generator = OpenAPIGenerator(app, state)
+
+    @app.get("/openapi.json")
+    async def openapi_json(req):  # noqa: F811
+        if state._cache is None:
+            state._cache = generator.build_spec()
+        return JSONResponse(state._cache)
+
+    if enable_redoc:
+        @app.get("/redoc")
+        async def redoc(req):  # noqa: F811
+            return Response(redoc_html("/openapi.json"), status=200, content_type="text/html; charset=utf-8")
+
+    if enable_elements:
+        @app.get("/elements")
+        async def elements(req):  # noqa: F811
+            return Response(stoplight_elements_html("/openapi.json"), status=200, content_type="text/html; charset=utf-8")
+
+    # expose simple API on app for invalidation/customization
+    app.openapi = state  # type: ignore[attr-defined]
+
+    return state

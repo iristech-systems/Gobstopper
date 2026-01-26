@@ -1,0 +1,361 @@
+# {{ project.name }}
+
+A modern Content Management System built with the Gobstopper framework.
+
+## 🚀 Features
+
+- **Content Management**: Create, edit, and publish various content types (posts, pages, media)
+- **User Authentication**: Secure login system with role-based permissions
+- **Media Library**: Upload, organize, and optimize images and files
+- **Search Functionality**: Full-text search across all content
+- **Real-time Updates**: WebSocket-powered live content updates
+- **Admin Interface**: Intuitive admin dashboard for content management
+- **SEO Friendly**: Optimized URLs, meta tags, and structured data
+- **Multi-user**: Role-based access control for editors and administrators
+- **Comment System**: Real-time commenting with moderation
+- **Analytics**: Built-in content analytics and view tracking
+
+## 📁 Project Structure
+
+```
+{{ project.name }}/
+├── content/             # Content models and managers
+├── auth/                # Authentication and authorization
+├── api/                 # API endpoints
+├── tasks/               # Background tasks
+├── frontend/            # Templates and static files
+│   ├── templates/       # Jinja2 templates
+│   └── static/          # CSS, JS, images
+├── tests/               # Test suite
+└── config/              # Configuration files
+```
+
+## 🛠️ Setup
+
+### Requirements
+
+- Python 3.11+
+- PostgreSQL (for content storage)
+- Redis (for sessions and caching)
+- Elasticsearch (optional, for advanced search)
+- Gobstopper framework
+
+### Installation
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install dev dependencies
+pip install -r requirements-dev.txt
+
+# Copy environment variables
+cp .env.example .env
+# Edit .env with your configuration
+```
+
+### Database Setup
+
+```bash
+# Create database
+createdb {{ project.python_module }}
+
+# Run migrations
+python manage.py migrate
+
+# Create superuser
+python manage.py createsuperuser
+```
+
+## 🚀 Running the Application
+
+### Development
+
+```bash
+# Run with hot reload
+granian --interface rsgi --reload app:app
+
+# Application will be available at:
+# - Website: http://localhost:8000
+# - Admin: http://localhost:8000/admin
+```
+
+### Production
+
+```bash
+# Run with multiple workers
+granian --interface rsgi --workers 4 --host 0.0.0.0 --port 8000 app:app
+```
+
+## 📄 Content Types
+
+### Built-in Content Types
+
+- **Posts**: Blog posts with categories and tags
+- **Pages**: Static pages (About, Contact, etc.)
+- **Media**: Images, documents, and other files
+
+### Custom Content Types
+
+You can easily add custom content types by extending the base content model:
+
+```python
+from content.models import BaseContent
+
+class Product(BaseContent):
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    inventory = models.IntegerField()
+    category = models.CharField(max_length=100)
+```
+
+## 🌐 API Endpoints
+
+### Public API
+
+- `GET /api/content` - List published content
+- `GET /api/content/{id}` - Get specific content
+- `GET /api/search?q={query}` - Search content
+
+### Admin API
+
+- `POST /api/admin/content` - Create content (requires auth)
+- `PUT /api/admin/content/{id}` - Update content (requires auth)
+- `DELETE /api/admin/content/{id}` - Delete content (requires auth)
+- `POST /api/admin/media/upload` - Upload media files (requires auth)
+
+## 👤 User Management
+
+### User Roles
+
+- **Visitor**: Can view published content
+- **Editor**: Can create and edit their own content
+- **Administrator**: Full access to all content and settings
+
+### Authentication
+
+The system uses session-based authentication with the following endpoints:
+
+- `GET /login` - Login form
+- `POST /login` - Authenticate user
+- `POST /logout` - End user session
+
+## 🖼️ Media Management
+
+### Supported File Types
+
+- **Images**: JPG, PNG, GIF, WebP
+- **Documents**: PDF, DOC, DOCX, TXT
+- **Archives**: ZIP, TAR, GZ
+
+### Automatic Processing
+
+- Image resizing and optimization
+- Thumbnail generation
+- Metadata extraction
+- Virus scanning (if configured)
+
+## 🔍 Search Features
+
+### Full-Text Search
+
+- Search across all content fields
+- Filter by content type
+- Pagination support
+- Relevance scoring
+
+### Search API
+
+```bash
+# Search all content
+curl "http://localhost:8000/api/search?q=python"
+
+# Search specific content type
+curl "http://localhost:8000/api/search?q=tutorial&type=post"
+```
+
+## 📊 Analytics & Monitoring
+
+### Built-in Analytics
+
+- Page views tracking
+- Popular content reports
+- User engagement metrics
+- Search query analysis
+
+### Health Monitoring
+
+- Database connection status
+- Background task queue health
+- Media storage availability
+- Search index status
+
+## 🎨 Theming
+
+### Template Structure
+
+```
+frontend/templates/
+├── base.html           # Base template
+├── homepage.html       # Homepage
+├── blog/
+│   ├── index.html     # Blog listing
+│   └── post.html      # Individual post
+├── admin/
+│   ├── dashboard.html # Admin dashboard
+│   └── content/       # Content management templates
+└── auth/
+    └── login.html     # Login form
+```
+
+### Customization
+
+1. Edit templates in `frontend/templates/`
+2. Add CSS/JS to `frontend/static/`
+3. Update context processors for global variables
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=.
+
+# Run specific test module
+pytest tests/test_content.py
+
+# Run integration tests
+pytest tests/integration/
+```
+
+## 🔐 Security Features
+
+- CSRF protection on all forms
+- XSS prevention in templates
+- SQL injection protection
+- File upload security
+- Session security
+- Rate limiting on API endpoints
+
+## 🐳 Docker Deployment
+
+```bash
+# Build image
+docker build -t {{ project.name }}:latest .
+
+# Run container
+docker run -p 8000:8000 --env-file .env {{ project.name }}:latest
+
+# Using docker-compose
+docker-compose up -d
+```
+
+## 📚 Content Workflow
+
+### Creating Content
+
+1. Log in to admin interface
+2. Navigate to Content → New
+3. Select content type
+4. Fill in title, body, and metadata
+5. Save as draft or publish immediately
+
+### Publishing Workflow
+
+1. **Draft**: Content saved but not visible to public
+2. **Review**: Content ready for review (if workflow enabled)  
+3. **Published**: Content live and visible to public
+4. **Archived**: Content hidden but preserved
+
+## ⚡ Background Tasks
+
+### Automatic Tasks
+
+- **Content Indexing**: Updates search index when content is published
+- **Media Processing**: Optimizes uploaded images and generates thumbnails
+- **Email Notifications**: Sends notifications for new comments/content
+- **Backups**: Automated content backups
+- **Analytics**: Processes view tracking data
+
+### Manual Tasks
+
+```bash
+# Rebuild search index
+python manage.py rebuild_index
+
+# Optimize all images
+python manage.py optimize_media
+
+# Cleanup old sessions
+python manage.py cleanup_sessions
+```
+
+## 🌍 Multi-language Support
+
+### Internationalization
+
+- Template strings are translation-ready
+- Database content can be localized
+- URL patterns support language prefixes
+- Date/time formatting respects locale
+
+### Adding Languages
+
+1. Create translation files
+2. Update URL patterns
+3. Add language switcher to templates
+
+## 📈 Performance Optimization
+
+### Caching Strategy
+
+- Template caching for static content
+- Database query optimization
+- Redis caching for sessions
+- CDN support for media files
+
+### Performance Monitoring
+
+- Built-in metrics endpoint
+- Database query analysis
+- Response time tracking
+- Memory usage monitoring
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Write tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+## 📋 Maintenance
+
+### Regular Tasks
+
+- Monitor disk space (media files)
+- Review error logs
+- Update dependencies
+- Backup database
+- Optimize search index
+
+### Troubleshooting
+
+Common issues and solutions:
+
+- **Media upload fails**: Check file permissions and disk space
+- **Search not working**: Verify Elasticsearch connection
+- **Slow performance**: Check database indexes and query optimization
+
+## 📝 License
+
+[Your License Here]
+
+## 🙏 Acknowledgments
+
+Built with [Gobstopper Framework](https://github.com/yourusername/wopr)

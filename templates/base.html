@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link href="/static/css/main.css" rel="stylesheet">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="logo">🌪️</span>
+            {{ app_name }}
+        </div>
+        <div class="nav-links">
+            <a href="/">Home</a>
+            <a href="/dashboard">📊 Dashboard</a>
+            <a href="/api/health">Health</a>
+            <a href="#" onclick="openTasksModal()">Tasks</a>
+            <a href="#" onclick="openWebSocketDemo()">WebSocket Demo</a>
+        </div>
+        <div class="nav-auth" style="margin-left:auto; display:flex; align-items:center; gap:0.5rem;">
+            <span id="authStatus" class="badge">Not signed in</span>
+            <button id="loginBtn" class="btn btn-secondary" onclick="loginDemo()">Login (Demo)</button>
+            <button id="logoutBtn" class="btn btn-secondary" onclick="logoutDemo()" disabled>Logout</button>
+        </div>
+    </nav>
+    
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 {{ app_name }} v{{ version }}</p>
+            <p>Built with ❤️ using Tempest Framework</p>
+        </div>
+    </footer>
+
+    <!-- Tasks Modal -->
+    <div id="tasksModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeTasksModal()">&times;</span>
+            <h2>Background Tasks</h2>
+            <div class="task-controls">
+                <button onclick="queueEmailTask()">Queue Email Task</button>
+                <button onclick="queueProcessingTask()">Queue Processing Task</button>
+                <button onclick="queueLongTask()">Queue Long Task</button>
+                <button onclick="getTaskStats()">Get Task Stats</button>
+            </div>
+            <div id="taskResults"></div>
+        </div>
+    </div>
+
+    <!-- WebSocket Demo Modal -->
+    <div id="websocketModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeWebSocketModal()">&times;</span>
+            <h2>WebSocket Demo</h2>
+            <div class="websocket-controls">
+                <button id="connectBtn" onclick="connectWebSocket()">Connect</button>
+                <button id="disconnectBtn" onclick="disconnectWebSocket()" disabled>Disconnect</button>
+                <input type="text" id="messageInput" placeholder="Enter message..." disabled>
+                <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+            </div>
+            <div id="websocketMessages"></div>
+        </div>
+    </div>
+    
+    <script src="/static/js/main.js"></script>
+    <script>
+        function getCSRF() {
+            const el = document.querySelector('meta[name="csrf-token"]');
+            return el ? el.content : '';
+        }
+        async function refreshAuthStatus() {
+            try {
+                const resp = await fetch('/me-demo', { headers: { 'Accept': 'application/json' } });
+                const statusEl = document.getElementById('authStatus');
+                const loginBtn = document.getElementById('loginBtn');
+                const logoutBtn = document.getElementById('logoutBtn');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.authenticated) {
+                        const user = (data.session && data.session.user) ? data.session.user : 'demo';
+                        statusEl.textContent = `Signed in as ${user}`;
+                        statusEl.className = 'badge badge-success';
+                        loginBtn.disabled = true;
+                        logoutBtn.disabled = false;
+                        return;
+                    }
+                }
+                statusEl.textContent = 'Not signed in';
+                statusEl.className = 'badge';
+                loginBtn.disabled = false;
+                logoutBtn.disabled = true;
+            } catch (e) {
+                console.warn('Auth status check failed', e);
+            }
+        }
+        async function loginDemo() {
+            try {
+                const resp = await fetch('/login-demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRF() },
+                    body: JSON.stringify({ user: 'demo' })
+                });
+                // After login, reload to render a fresh CSRF token bound to the new session
+                window.location.reload();
+            } catch (e) {
+                alert('Login failed: ' + e.message);
+            }
+        }
+        async function logoutDemo() {
+            try {
+                const resp = await fetch('/logout-demo', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCSRF() }
+                });
+                // After logout, reload to clear session-bound CSRF token
+                window.location.reload();
+            } catch (e) {
+                alert('Logout failed: ' + e.message);
+            }
+        }
+        document.addEventListener('DOMContentLoaded', refreshAuthStatus);
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,27 @@
+"""
+{{ project.name }} - Modular Architecture
+Module initialization and configuration
+"""
+
+# Module version
+__version__ = "1.0.0"
+
+# Export main module components
+from .auth import auth_routes, auth_middleware
+from .api import api_routes  
+from .admin import admin_routes
+from .public import public_routes
+{% if 'websockets' in project.features %}from .websockets import websocket_routes{% endif %}
+from .database import DatabaseManager
+from .tasks import TaskManager
+
+__all__ = [
+    "auth_routes",
+    "auth_middleware", 
+    "api_routes",
+    "admin_routes",
+    "public_routes",
+    {% if 'websockets' in project.features %}"websocket_routes",{% endif %}
+    "DatabaseManager",
+    "TaskManager"
+]

@@ -1,0 +1,99 @@
+# Gobstopper Framework Configuration (TOML)
+# Copy this file to config.toml or config.{env}.toml and customize
+
+# Environment: development, test, production
+env = "development"
+
+# Enable debug mode (auto-disabled in production)
+debug = true
+
+[server]
+host = "127.0.0.1"
+port = 8000
+workers = 1
+interface = "rsgi"
+log_level = "info"
+
+[security]
+# IMPORTANT: Generate a secure random secret key for production
+# secret_key = "your-secret-key-here-min-32-chars"
+
+# CSRF protection
+enable_csrf = true
+enable_security_headers = true
+
+# HSTS (HTTP Strict Transport Security)
+hsts_max_age = 31536000  # 1 year in seconds
+hsts_include_subdomains = true
+
+# Content Security Policy
+csp_policy = "default-src 'self'; object-src 'none'"
+
+# Security policies
+referrer_policy = "strict-origin-when-cross-origin"
+coop_policy = "same-origin"  # Cross-Origin-Opener-Policy
+coep_policy = "require-corp"  # Cross-Origin-Embedder-Policy
+
+# Cookie settings
+cookie_secure = true      # HTTPS only (enforced in production)
+cookie_httponly = true    # No JavaScript access (enforced in production)
+cookie_samesite = "Strict"  # CSRF protection (enforced in production)
+cookie_max_age = 3600     # 1 hour
+
+# Session storage: file, memory, sql, redis
+session_storage_type = "file"
+# session_storage_path = "./sessions"  # Optional custom path
+
+[cors]
+enabled = false
+allow_origins = ["*"]
+allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allow_headers = ["*"]
+allow_credentials = false
+max_age = 86400  # 1 day
+
+[static_files]
+enabled = true
+url_path = "/static"
+directory = "static"
+use_rust = true  # Use Rust implementation if available
+
+[templates]
+directory = "templates"
+use_rust = true  # Use Rust implementation if available
+auto_reload = false  # Set to true in development for hot reload
+cache_size = 400
+
+[tasks]
+enabled = true
+storage_type = "duckdb"  # duckdb or memory
+# storage_path = "./tasks.db"  # Optional custom path
+max_workers = 4
+default_priority = 5
+enable_retries = true
+max_retries = 3
+cleanup_days = 7  # Clean up completed tasks after N days
+
+[rate_limit]
+enabled = false
+default_rate = 100  # requests
+default_period = 60  # seconds
+storage_type = "memory"  # memory or redis
+
+[logging]
+level = "info"  # debug, info, warning, error, critical
+format = "text"  # text or json
+enable_correlation_id = false
+# log_file = "./app.log"  # Optional file output
+
+[metrics]
+enabled = false
+export_type = "prometheus"  # prometheus or opentelemetry
+endpoint = "/metrics"
+include_hostname = true
+
+# Custom application-specific configuration
+[custom]
+# Add your own configuration here
+# app_name = "My Gobstopper App"
+# feature_flags = { experimental = false }

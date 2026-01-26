@@ -1,0 +1,210 @@
+# {{ project.name }}
+
+A high-performance Data Science API built with the Gobstopper framework.
+
+## 🚀 Features
+
+- **Machine Learning Models**: Train, evaluate, and deploy ML models
+- **Real-time Predictions**: Fast inference with cached models
+- **Batch Processing**: Asynchronous batch predictions
+- **Data Pipeline**: Automated preprocessing and feature engineering
+- **Model Versioning**: Track and manage multiple model versions
+- **WebSocket Updates**: Real-time training progress monitoring
+- **API Documentation**: Interactive API documentation
+
+## 📁 Project Structure
+
+```
+{{ project.name }}/
+├── models/              # ML models and schemas
+├── data/                # Data processing and validation
+├── api/                 # API endpoints
+├── tasks/               # Background tasks
+├── notebooks/           # Jupyter notebooks for experimentation
+├── tests/               # Test suite
+└── config/              # Configuration files
+```
+
+## 🛠️ Setup
+
+### Requirements
+
+- Python 3.11+
+- PostgreSQL (for data storage)
+- Redis (for caching)
+- Gobstopper framework
+
+### Installation
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install dev dependencies
+pip install -r requirements-dev.txt
+
+# Copy environment variables
+cp .env.example .env
+# Edit .env with your configuration
+```
+
+### Database Setup
+
+```bash
+# Create database
+createdb {{ project.python_module }}
+
+# Run migrations (if using alembic)
+alembic upgrade head
+```
+
+## 🚀 Running the Application
+
+### Development
+
+```bash
+# Run with hot reload
+granian --interface rsgi --reload app:app
+
+# Application will be available at http://localhost:8000
+```
+
+### Production
+
+```bash
+# Run with multiple workers
+granian --interface rsgi --workers 4 --host 0.0.0.0 --port 8000 app:app
+```
+
+## 📊 API Endpoints
+
+### Health Check
+- `GET /api/v1/health` - Service health status
+
+### Predictions
+- `POST /api/v1/predict` - Single prediction
+- `POST /api/v1/predict/batch` - Batch predictions
+
+### Model Management
+- `GET /api/v1/models` - List available models
+- `GET /api/v1/models/{model_id}` - Get model details
+- `POST /api/v1/train` - Train new model
+- `DELETE /api/v1/models/{model_id}` - Delete model
+
+### Data Management
+- `POST /api/v1/data/upload` - Upload dataset
+- `GET /api/v1/data/{dataset_id}` - Get dataset info
+
+### Task Monitoring
+- `GET /api/v1/tasks/{task_id}` - Get task status
+- `WS /ws/training/{task_id}` - Real-time training updates
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=.
+
+# Run specific test file
+pytest tests/test_models.py
+
+# Run with verbose output
+pytest -v
+```
+
+## 📈 Model Training
+
+### Using the API
+
+```python
+import requests
+
+# Upload dataset
+with open("data.csv", "rb") as f:
+    response = requests.post(
+        "http://localhost:8000/api/v1/data/upload",
+        files={"file": f}
+    )
+    dataset_id = response.json()["dataset_id"]
+
+# Train model
+response = requests.post(
+    "http://localhost:8000/api/v1/train",
+    json={
+        "model_type": "random_forest",
+        "dataset_id": dataset_id,
+        "hyperparameters": {
+            "n_estimators": 100,
+            "max_depth": 10
+        }
+    }
+)
+task_id = response.json()["task_id"]
+
+# Monitor training
+response = requests.get(f"http://localhost:8000/api/v1/tasks/{task_id}")
+print(response.json())
+```
+
+### Using Jupyter Notebooks
+
+```bash
+# Start Jupyter Lab
+jupyter lab
+
+# Open notebooks/exploration.ipynb for data exploration
+# Open notebooks/training.ipynb for model training
+```
+
+## 🔍 Monitoring
+
+### Application Metrics
+- Access metrics at `/metrics` (Prometheus format)
+- Health check at `/api/v1/health`
+
+### Logging
+- Application logs: `logs/app.log`
+- Training logs: `logs/training.log`
+- Error logs: `logs/error.log`
+
+## 🐳 Docker Deployment
+
+```bash
+# Build image
+docker build -t {{ project.name }}:latest .
+
+# Run container
+docker run -p 8000:8000 --env-file .env {{ project.name }}:latest
+
+# Using docker-compose
+docker-compose up -d
+```
+
+## 📚 Documentation
+
+- API Documentation: http://localhost:8000/docs
+- Model Documentation: `docs/models.md`
+- Data Pipeline: `docs/pipeline.md`
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## 📝 License
+
+[Your License Here]
+
+## 🙏 Acknowledgments
+
+Built with [Gobstopper Framework](https://github.com/yourusername/wopr)

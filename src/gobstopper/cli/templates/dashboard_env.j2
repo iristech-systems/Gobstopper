@@ -1,0 +1,51 @@
+# {{ project.name.upper() }} - Real-time Dashboard Configuration
+
+# Application Settings
+APP_NAME="{{ project.name }}"
+DEBUG=true
+SECRET_KEY=your-secret-key-here-change-in-production
+ENVIRONMENT=development
+
+# Database Configuration
+DATABASE_URL=postgresql://user:password@localhost:5432/{{ project.python_module }}
+# Alternative: SQLite for development
+# DATABASE_URL=sqlite:///{{ project.python_module }}.db
+
+# Redis Configuration (required for real-time features)
+REDIS_URL=redis://localhost:6379/0
+REDIS_CACHE_DB=redis://localhost:6379/1
+
+# Dashboard Configuration
+UPDATE_INTERVAL=5
+DATA_RETENTION_DAYS=30
+MAX_METRICS_POINTS=10000
+
+# WebSocket Configuration
+WEBSOCKET_URL=ws://localhost:8000
+MAX_WEBSOCKET_CONNECTIONS=1000
+
+# External Data Sources (optional)
+PROMETHEUS_URL=http://localhost:9090
+GRAFANA_URL=http://localhost:3000
+INFLUXDB_URL=http://localhost:8086
+
+# API Configuration
+ALLOWED_ORIGINS=["http://localhost:3000", "http://localhost:8080"]
+RATE_LIMIT_REQUESTS=1000
+RATE_LIMIT_WINDOW=60
+
+# Monitoring and Alerting
+ENABLE_ALERTS=true
+ALERT_EMAIL_SMTP_HOST=smtp.gmail.com
+ALERT_EMAIL_SMTP_PORT=587
+ALERT_EMAIL_USER=your-email@gmail.com
+ALERT_EMAIL_PASSWORD=your-app-password
+ALERT_EMAIL_FROM=dashboard@{{ project.python_module }}.com
+
+# Logging
+LOG_LEVEL=INFO
+ENABLE_METRICS_LOGGING=true
+
+# Security
+CSRF_PROTECTION=true
+SECURE_COOKIES=false

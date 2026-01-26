@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Updates - Tempest Charts</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1f2937;
+            color: white;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            background: #374151;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+        }
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        .pulse {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: #10b981;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status {
+            color: #9ca3af;
+            font-size: 0.9rem;
+        }
+        .chart-card {
+            background: #374151;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #2563eb;
+        }
+        button.stop {
+            background: #ef4444;
+        }
+        button.stop:hover {
+            background: #dc2626;
+        }
+        button:disabled {
+            background: #4b5563;
+            cursor: not-allowed;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .stat {
+            background: #1f2937;
+            padding: 1rem;
+            border-radius: 8px;
+        }
+        .stat-label {
+            color: #9ca3af;
+            font-size: 0.85rem;
+            margin-bottom: 0.25rem;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #60a5fa;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <span class="pulse"></span>
+                Real-time Data Stream
+            </h1>
+            <div class="status">
+                Fetching live data every second | <a href="/" style="color: #60a5fa;">Back to Home</a>
+            </div>
+        </header>
+
+        <div class="chart-card">
+            <div class="controls">
+                <button onclick="startStream()" id="startBtn">▶️ Start Stream</button>
+                <button onclick="stopStream()" id="stopBtn" class="stop" disabled>⏸️ Stop Stream</button>
+                <button onclick="clearData()">🗑️ Clear Data</button>
+            </div>
+
+            <div id="chart" style="width: 100%; height: 500px;"></div>
+
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">Data Points</div>
+                    <div class="stat-value" id="dataPoints">0</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Current Value</div>
+                    <div class="stat-value" id="currentValue">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Average</div>
+                    <div class="stat-value" id="average">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Max Value</div>
+                    <div class="stat-value" id="maxValue">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize chart
+        const chartDom = document.getElementById('chart');
+        const myChart = echarts.init(chartDom);
+
+        let data = {
+            times: [],
+            values: []
+        };
+        let intervalId = null;
+        const MAX_POINTS = 30; // Keep last 30 data points
+
+        const option = {
+            backgroundColor: 'transparent',
+            title: {
+                text: 'Live Sensor Data',
+                textStyle: {
+                    color: '#f9fafb'
+                }
+            },
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: 'rgba(31, 41, 55, 0.95)',
+                borderColor: '#4b5563',
+                textStyle: {
+                    color: '#f9fafb'
+                }
+            },
+            xAxis: {
+                type: 'category',
+                boundaryGap: false,
+                data: data.times,
+                axisLine: {
+                    lineStyle: {
+                        color: '#4b5563'
+                    }
+                },
+                axisLabel: {
+                    color: '#9ca3af'
+                }
+            },
+            yAxis: {
+                type: 'value',
+                min: 0,
+                max: 250,
+                axisLine: {
+                    show: false
+                },
+                axisTick: {
+                    show: false
+                },
+                axisLabel: {
+                    color: '#9ca3af'
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: '#4b5563',
+                        type: 'dashed'
+                    }
+                }
+            },
+            series: [{
+                name: 'Value',
+                type: 'line',
+                smooth: true,
+                symbol: 'circle',
+                symbolSize: 8,
+                data: data.values,
+                lineStyle: {
+                    width: 3,
+                    color: '#60a5fa'
+                },
+                itemStyle: {
+                    color: '#60a5fa'
+                },
+                areaStyle: {
+                    color: {
+                        type: 'linear',
+                        x: 0,
+                        y: 0,
+                        x2: 0,
+                        y2: 1,
+                        colorStops: [{
+                            offset: 0,
+                            color: 'rgba(96, 165, 250, 0.5)'
+                        }, {
+                            offset: 1,
+                            color: 'rgba(96, 165, 250, 0.05)'
+                        }]
+                    }
+                }
+            }]
+        };
+
+        myChart.setOption(option);
+
+        // Fetch and update data
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/live-data');
+                const newData = await response.json();
+
+                // Add new data point
+                data.times.push(newData.timestamp);
+                data.values.push(newData.value);
+
+                // Keep only last MAX_POINTS
+                if (data.times.length > MAX_POINTS) {
+                    data.times.shift();
+                    data.values.shift();
+                }
+
+                // Update chart
+                myChart.setOption({
+                    xAxis: {
+                        data: data.times
+                    },
+                    series: [{
+                        data: data.values
+                    }]
+                });
+
+                // Update stats
+                updateStats();
+            } catch (error) {
+                console.error('Failed to fetch data:', error);
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('dataPoints').textContent = data.values.length;
+
+            if (data.values.length > 0) {
+                const current = data.values[data.values.length - 1];
+                const avg = Math.round(data.values.reduce((a, b) => a + b, 0) / data.values.length);
+                const max = Math.max(...data.values);
+
+                document.getElementById('currentValue').textContent = current;
+                document.getElementById('average').textContent = avg;
+                document.getElementById('maxValue').textContent = max;
+            }
+        }
+
+        function startStream() {
+            if (intervalId) return;
+
+            intervalId = setInterval(fetchData, 1000);
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+
+            // Fetch first data point immediately
+            fetchData();
+        }
+
+        function stopStream() {
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        function clearData() {
+            data.times = [];
+            data.values = [];
+            myChart.setOption({
+                xAxis: { data: [] },
+                series: [{ data: [] }]
+            });
+            updateStats();
+        }
+
+        // Responsive resize
+        window.addEventListener('resize', () => {
+            myChart.resize();
+        });
+
+        // Auto-start on load
+        window.addEventListener('load', () => {
+            startStream();
+        });
+    </script>
+</body>
+</html>

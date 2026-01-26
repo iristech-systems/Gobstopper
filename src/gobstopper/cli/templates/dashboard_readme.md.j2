@@ -1,0 +1,286 @@
+# {{ project.name }}
+
+A high-performance real-time dashboard built with the Gobstopper framework.
+
+## 🚀 Features
+
+- **Real-time Data Streaming**: Live metrics updates via WebSocket
+- **Interactive Dashboards**: Customizable charts and visualizations
+- **Alert System**: Configurable alerts with multiple notification channels
+- **Data Aggregation**: Efficient time-series data processing
+- **Multi-source Support**: Connect to various data sources (Prometheus, InfluxDB, etc.)
+- **RESTful API**: Complete REST API for dashboard management
+- **Server-Sent Events**: Alternative to WebSocket for real-time updates
+- **Responsive Design**: Mobile-friendly dashboard interface
+
+## 📁 Project Structure
+
+```
+{{ project.name }}/
+├── data/                # Data collection and processing
+│   ├── collectors/      # Metrics collectors
+│   └── aggregators.py   # Data aggregation logic
+├── api/                 # REST API endpoints
+│   ├── metrics.py       # Metrics API
+│   ├── alerts.py        # Alert management
+│   └── historical.py    # Historical data
+├── websockets/          # WebSocket endpoints
+├── tasks/               # Background tasks
+├── frontend/            # Dashboard UI
+│   ├── templates/       # HTML templates
+│   ├── static/          # CSS, JS, images
+│   └── components/      # Reusable UI components
+├── config/              # Configuration
+└── tests/               # Test suite
+```
+
+## 🛠️ Setup
+
+### Requirements
+
+- Python 3.11+
+- Redis (for real-time features and caching)
+- PostgreSQL (for data storage)
+- Gobstopper framework
+
+### Installation
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Copy environment variables
+cp .env.example .env
+# Edit .env with your configuration
+```
+
+### Redis Setup
+
+```bash
+# Install Redis (macOS)
+brew install redis
+brew services start redis
+
+# Install Redis (Ubuntu)
+sudo apt install redis-server
+sudo systemctl start redis
+
+# Verify Redis is running
+redis-cli ping  # Should return "PONG"
+```
+
+## 🚀 Running the Dashboard
+
+### Development
+
+```bash
+# Run with hot reload
+granian --interface rsgi --reload app:app
+
+# Dashboard will be available at:
+# - Main Dashboard: http://localhost:8000
+# - API Health: http://localhost:8000/api/health
+# - WebSocket: ws://localhost:8000/ws/dashboard
+```
+
+### Production
+
+```bash
+# Run with multiple workers
+granian --interface rsgi --workers 4 --host 0.0.0.0 --port 8000 app:app
+```
+
+## 📊 API Endpoints
+
+### Metrics API
+- `GET /api/metrics` - Get current metrics
+- `GET /api/metrics/live` - Real-time metrics snapshot
+- `POST /api/metrics/query` - Query metrics with custom parameters
+- `POST /api/metrics/push` - Push metrics from external sources
+
+### Alerts API
+- `GET /api/alerts` - List active alerts
+- `POST /api/alerts` - Create new alert rule
+- `PUT /api/alerts/{id}` - Update alert rule
+- `DELETE /api/alerts/{id}` - Delete alert rule
+
+### Historical Data
+- `GET /api/historical/{metric}` - Get historical data
+- `GET /api/export` - Export dashboard data
+
+### Configuration
+- `GET /api/config` - Get dashboard configuration
+- `POST /api/config` - Update configuration
+
+## 🔌 WebSocket Endpoints
+
+### Real-time Updates
+- `WS /ws/dashboard` - Main dashboard updates
+- `WS /ws/notifications` - Alert notifications
+- `WS /ws/metrics/{metric}` - Specific metric updates
+
+### Usage Example
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/dashboard');
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'metrics_update') {
+        updateDashboard(data.data);
+    }
+};
+```
+
+## 📈 Data Sources
+
+### Supported Sources
+- **Prometheus**: Scrape metrics from Prometheus
+- **InfluxDB**: Query time-series data
+- **Database**: SQL queries for custom metrics
+- **HTTP APIs**: RESTful data sources
+- **File**: CSV, JSON data files
+
+### Adding Custom Data Sources
+```python
+from data.collectors import BaseCollector
+
+class CustomCollector(BaseCollector):
+    async def collect_metrics(self) -> dict:
+        # Implement your data collection logic
+        return {"custom_metric": 42}
+```
+
+## 🚨 Alert System
+
+### Alert Types
+- **Threshold Alerts**: Value above/below threshold
+- **Rate Alerts**: Change rate exceeding limits
+- **Anomaly Detection**: Statistical anomaly alerts
+- **Custom Logic**: Python-based custom alerts
+
+### Notification Channels
+- Email notifications
+- WebSocket push notifications
+- Webhook callbacks
+- Slack integration (configurable)
+
+### Example Alert Configuration
+```python
+await alerts.create_alert(
+    name="High CPU Usage",
+    condition="cpu_usage > 80",
+    threshold=80,
+    action="email",
+    recipients=["admin@company.com"]
+)
+```
+
+## 📊 Dashboard Features
+
+### Chart Types
+- Line charts (time series)
+- Bar charts
+- Gauge charts
+- Heatmaps
+- Scatter plots
+- Custom visualizations
+
+### Customization
+- Drag-and-drop layout
+- Custom time ranges
+- Real-time vs. historical views
+- Export to PNG/PDF
+- Dashboard templates
+
+## 🔍 Monitoring & Performance
+
+### Built-in Metrics
+- Request rate and latency
+- WebSocket connection count
+- Data processing performance
+- Memory and CPU usage
+- Error rates
+
+### Health Checks
+```bash
+# Check application health
+curl http://localhost:8000/api/health
+
+# Check specific components
+curl http://localhost:8000/api/health/redis
+curl http://localhost:8000/api/health/database
+```
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=.
+
+# Test WebSocket endpoints
+pytest tests/test_websockets.py
+
+# Performance tests
+pytest tests/test_performance.py -v
+```
+
+## 🐳 Docker Deployment
+
+```bash
+# Build image
+docker build -t {{ project.name }}:latest .
+
+# Run with Docker Compose (includes Redis)
+docker-compose up -d
+
+# Standalone container
+docker run -p 8000:8000 --env-file .env {{ project.name }}:latest
+```
+
+## 📚 Configuration
+
+### Environment Variables
+See `.env.example` for all available configuration options.
+
+### Key Settings
+- `UPDATE_INTERVAL`: How often to refresh data (seconds)
+- `DATA_RETENTION_DAYS`: How long to keep historical data
+- `MAX_WEBSOCKET_CONNECTIONS`: WebSocket connection limit
+- `REDIS_URL`: Redis connection string
+
+## 🔐 Security
+
+- CSRF protection on all forms
+- Rate limiting on API endpoints
+- Secure WebSocket connections
+- Input validation and sanitization
+- Optional authentication middleware
+
+## 📖 API Documentation
+
+Interactive API documentation available at:
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+## 📝 License
+
+[Your License Here]
+
+## 🙏 Acknowledgments
+
+Built with [Gobstopper Framework](https://github.com/yourusername/wopr)

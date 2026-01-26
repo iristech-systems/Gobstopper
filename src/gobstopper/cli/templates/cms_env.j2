@@ -1,0 +1,91 @@
+# {{ project.name.upper() }} - Content Management System Configuration
+
+# Application Settings
+APP_NAME="{{ project.name }}"
+DEBUG=true
+SECRET_KEY=your-secret-key-here-change-in-production
+ENVIRONMENT=development
+SITE_NAME="{{ project.name }} CMS"
+
+# Database Configuration
+DATABASE_URL=postgresql://user:password@localhost:5432/{{ project.python_module }}
+# Alternative: SQLite for development
+# DATABASE_URL=sqlite:///{{ project.python_module }}.db
+
+# Redis Configuration (for sessions and caching)
+REDIS_URL=redis://localhost:6379/0
+SESSION_REDIS_DB=redis://localhost:6379/1
+
+# Authentication & Security
+JWT_SECRET_KEY=your-jwt-secret-key-here
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_HOURS=24
+PASSWORD_MIN_LENGTH=8
+REQUIRE_EMAIL_VERIFICATION=false
+
+# Admin Configuration
+ADMIN_EMAIL=admin@{{ project.python_module }}.com
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
+
+# File Upload Configuration
+UPLOAD_FOLDER=media/uploads
+MAX_FILE_SIZE=10485760  # 10MB in bytes
+ALLOWED_EXTENSIONS=["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "txt"]
+MEDIA_URL=http://localhost:8000/media
+
+# Content Configuration
+POSTS_PER_PAGE=10
+AUTO_EXCERPT_LENGTH=200
+ENABLE_COMMENTS=true
+MODERATE_COMMENTS=true
+ALLOW_GUEST_COMMENTS=false
+
+# SEO & Meta
+DEFAULT_META_DESCRIPTION="A powerful CMS built with Gobstopper framework"
+DEFAULT_META_KEYWORDS="cms,wopr,python,content management"
+ENABLE_SITEMAP=true
+SITEMAP_UPDATE_FREQUENCY=daily
+
+# Email Configuration (for notifications)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=your-email@gmail.com
+SMTP_PASSWORD=your-app-password
+FROM_EMAIL={{ project.python_module }}@gmail.com
+
+# Search Configuration
+SEARCH_ENGINE=builtin  # builtin, elasticsearch
+ELASTICSEARCH_URL=http://localhost:9200
+SEARCH_INDEX_NAME={{ project.python_module }}_search
+
+# Cache Configuration
+CACHE_TYPE=redis
+CACHE_DEFAULT_TIMEOUT=300
+CACHE_KEY_PREFIX={{ project.python_module }}_cache
+
+# API Configuration
+ALLOWED_ORIGINS=["http://localhost:3000", "http://localhost:8080"]
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=60
+API_PAGINATION_LIMIT=50
+
+# WebSocket Configuration (if enabled)
+WEBSOCKET_URL=ws://localhost:8000
+MAX_WEBSOCKET_CONNECTIONS=500
+
+# Backup Configuration
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE="0 2 * * *"  # Daily at 2 AM
+BACKUP_RETENTION_DAYS=30
+BACKUP_LOCATION=./backups
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=logs/{{ project.python_module }}.log
+ACCESS_LOG_FILE=logs/access.log
+
+# Performance
+ENABLE_GZIP=true
+STATIC_FILE_CACHE_TIMEOUT=3600

@@ -1,0 +1,84 @@
+# {{ project.name }} - Microservice
+# Gobstopper Framework Requirements
+
+# Core framework
+wopr
+
+# Database drivers
+asyncpg>=0.29.0          # PostgreSQL async driver
+aiomysql>=0.2.0          # MySQL async driver (alternative)
+databases[postgresql]>=0.8.0
+
+# Authentication & Security
+pyjwt>=2.8.0             # JWT handling
+passlib[bcrypt]>=1.7.4   # Password hashing
+cryptography>=41.0.0     # Crypto operations
+
+# HTTP Client (for service-to-service communication)
+aiohttp>=3.9.0           # Async HTTP client
+httpx>=0.25.0            # Alternative HTTP client
+
+# Caching & Sessions
+redis>=5.0.0            # Redis for caching
+aioredis>=2.0.1         # Async Redis client
+
+# Data Validation & Serialization
+pydantic>=2.5.0         # Data validation and serialization
+marshmallow>=3.20.0     # Alternative serialization (optional)
+
+# Background Tasks & Message Queues
+celery>=5.3.0           # Distributed task queue
+aio-pika>=9.3.0         # RabbitMQ async client
+aiokafka>=0.9.0         # Kafka async client (for event streaming)
+
+# Monitoring & Metrics
+prometheus-client>=0.19.0 # Prometheus metrics
+structlog>=23.2.0        # Structured logging
+opentelemetry-api>=1.21.0 # Distributed tracing
+
+# Rate Limiting
+slowapi>=0.1.9          # Rate limiting
+limits>=3.6.0           # Rate limiting algorithms
+
+# Configuration Management
+python-dotenv>=1.0.0    # Environment variables
+pydantic-settings>=2.1.0 # Settings management
+
+# Date & Time
+python-dateutil>=2.8.0  # Date parsing and manipulation
+
+# Utilities
+click>=8.1.0            # CLI interface
+rich>=13.7.0            # Rich text and beautiful formatting
+
+# File Processing
+aiofiles>=23.2.1        # Async file operations
+python-multipart>=0.0.6 # File upload support
+
+# Data Processing
+pandas>=2.1.0           # Data analysis (optional)
+numpy>=1.25.0           # Numerical computing (optional)
+
+# Development Dependencies (add to requirements-dev.txt)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# pytest-cov>=4.1.0
+# pytest-mock>=3.12.0
+# black>=23.0.0
+# ruff>=0.1.0
+# mypy>=1.7.0
+# pre-commit>=3.5.0
+
+# Production Dependencies (optional)
+# gunicorn>=21.0.0        # WSGI server (if needed)
+# uvicorn[standard]>=0.24.0 # ASGI server (alternative to granian)
+
+# Cloud & Infrastructure (optional)
+# boto3>=1.34.0           # AWS SDK
+# google-cloud-storage>=2.10.0 # Google Cloud Storage
+# azure-storage-blob>=12.19.0  # Azure Blob Storage
+
+# Observability (optional)
+# sentry-sdk>=1.38.0      # Error tracking
+# datadog>=0.48.0         # Datadog metrics
+# newrelic>=9.4.0         # New Relic APM

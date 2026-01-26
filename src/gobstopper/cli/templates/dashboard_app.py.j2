@@ -1,0 +1,408 @@
+"""
+{{ project.name }} - Real-time Dashboard
+Built with Gobstopper Framework
+"""
+
+import asyncio
+import json
+from datetime import datetime
+from gobstopper import Gobstopper
+from gobstopper.websocket.manager import WebSocketManager
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+from gobstopper.tasks.queue import TaskPriority
+
+# Import project modules
+from websockets import dashboard_manager, data_streams, notifications
+from data import collectors, aggregators, cache
+from api import metrics, alerts, historical
+from tasks import data_ingestion, cleanup
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize templates
+app.init_templates("frontend/templates", use_rust=True)
+
+# WebSocket manager for real-time connections
+ws_manager = WebSocketManager()
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(secret_key=settings.SECRET_KEY), priority=100)
+app.add_middleware(
+    CORSMiddleware(
+        origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True
+    ),
+    priority=95
+)
+app.add_middleware(
+    RustStaticMiddleware(
+        directory="frontend/static",
+        url_prefix="/static"
+    ),
+    priority=90
+)
+
+# Context processors
+@app.context_processor
+def inject_app_info():
+    return {
+        "app_name": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "websocket_url": settings.WEBSOCKET_URL
+    }
+
+# Background tasks for data collection
+@app.task("collect_metrics", category="data")
+async def collect_metrics_task():
+    """Collect metrics from various sources"""
+    return await data_ingestion.collect_all_metrics()
+
+@app.task("aggregate_data", category="data")
+async def aggregate_data_task(time_window: str):
+    """Aggregate data for specific time window"""
+    return await aggregators.aggregate_time_window(time_window)
+
+@app.task("cleanup_old_data", category="maintenance")
+async def cleanup_old_data_task(days_to_keep: int = 30):
+    """Clean up old dashboard data"""
+    return await cleanup.remove_old_data(days_to_keep)
+
+# Main dashboard route
+@app.get("/")
+async def dashboard(request):
+    """Main dashboard page"""
+    initial_metrics = await metrics.get_current_metrics()
+    return await app.render_template("dashboard.html",
+        metrics=initial_metrics,
+        update_interval=settings.UPDATE_INTERVAL
+    )
+
+# API Routes
+@app.get("/api/health")
+async def health_check(request):
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "websocket_connections": len(ws_manager.connections),
+        "data_sources": await collectors.get_active_sources()
+    }
+
+# Metrics API
+@app.get("/api/metrics")
+async def get_metrics(request):
+    """Get current metrics"""
+    time_range = request.args.get("range", ["1h"])[0]
+    metric_type = request.args.get("type", ["all"])[0]
+    
+    return await metrics.get_metrics(time_range, metric_type)
+
+@app.get("/api/metrics/live")
+async def get_live_metrics(request):
+    """Get real-time metrics snapshot"""
+    return await metrics.get_live_snapshot()
+
+@app.post("/api/metrics/query")
+async def query_metrics(request):
+    """Query metrics with custom parameters"""
+    data = await request.get_json()
+    
+    result = await metrics.query(
+        metric_names=data.get("metrics", []),
+        start_time=data.get("start_time"),
+        end_time=data.get("end_time"),
+        aggregation=data.get("aggregation", "avg")
+    )
+    
+    return result
+
+# Alerts API
+@app.get("/api/alerts")
+async def get_alerts(request):
+    """Get active alerts"""
+    return await alerts.get_active_alerts()
+
+@app.post("/api/alerts")
+async def create_alert(request):
+    """Create new alert rule"""
+    data = await request.get_json()
+    
+    alert_id = await alerts.create_alert(
+        name=data.get("name"),
+        condition=data.get("condition"),
+        threshold=data.get("threshold"),
+        action=data.get("action")
+    )
+    
+    return {"alert_id": alert_id, "status": "created"}
+
+@app.delete("/api/alerts/<alert_id>")
+async def delete_alert(request, alert_id: str):
+    """Delete alert rule"""
+    success = await alerts.delete_alert(alert_id)
+    if success:
+        return {"message": "Alert deleted"}
+    return {"error": "Alert not found"}, 404
+
+# Historical data API
+@app.get("/api/historical/<metric_name>")
+async def get_historical_data(request, metric_name: str):
+    """Get historical data for a specific metric"""
+    days = int(request.args.get("days", ["7"])[0])
+    
+    return await historical.get_metric_history(metric_name, days)
+
+@app.get("/api/export")
+async def export_data(request):
+    """Export dashboard data"""
+    format_type = request.args.get("format", ["json"])[0]
+    time_range = request.args.get("range", ["24h"])[0]
+    
+    data = await historical.export_data(time_range, format_type)
+    
+    if format_type == "csv":
+        return Response(data, content_type="text/csv",
+                       headers={"Content-Disposition": "attachment; filename=dashboard_export.csv"})
+    else:
+        return data
+
+# Configuration API
+@app.get("/api/config")
+async def get_config(request):
+    """Get dashboard configuration"""
+    return {
+        "update_interval": settings.UPDATE_INTERVAL,
+        "data_retention_days": settings.DATA_RETENTION_DAYS,
+        "available_metrics": await metrics.list_available_metrics(),
+        "chart_types": ["line", "bar", "area", "scatter", "heatmap"],
+        "time_ranges": ["1h", "6h", "24h", "7d", "30d", "90d"]
+    }
+
+@app.post("/api/config")
+async def update_config(request):
+    """Update dashboard configuration"""
+    data = await request.get_json()
+    
+    # Update configuration
+    for key, value in data.items():
+        if hasattr(settings, key.upper()):
+            setattr(settings, key.upper(), value)
+    
+    return {"message": "Configuration updated"}
+
+# WebSocket endpoints for real-time updates
+@app.websocket("/ws/dashboard")
+async def dashboard_websocket(websocket):
+    """Main dashboard WebSocket for real-time updates"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    
+    # Add to manager
+    ws_manager.add_connection(connection_id, websocket)
+    ws_manager.join_room(connection_id, "dashboard")
+    
+    try:
+        # Send initial data
+        await websocket.send_json({
+            "type": "connected",
+            "connection_id": connection_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        # Start sending periodic updates
+        while True:
+            # Get latest metrics
+            metrics_data = await metrics.get_live_snapshot()
+            
+            await websocket.send_json({
+                "type": "metrics_update",
+                "data": metrics_data,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            await asyncio.sleep(settings.UPDATE_INTERVAL)
+            
+    except Exception as e:
+        app.logger.error(f"WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+
+@app.websocket("/ws/notifications")
+async def notifications_websocket(websocket):
+    """WebSocket for real-time notifications and alerts"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    
+    # Add to manager
+    ws_manager.add_connection(connection_id, websocket)
+    ws_manager.join_room(connection_id, "notifications")
+    
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "connection_id": connection_id
+        })
+        
+        # Listen for notifications
+        async for message in notifications.get_notification_stream():
+            await websocket.send_json({
+                "type": "notification",
+                "data": message,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+    except Exception as e:
+        app.logger.error(f"Notification WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+
+@app.websocket("/ws/metrics/<metric_name>")
+async def metric_specific_websocket(websocket, metric_name: str):
+    """WebSocket for specific metric updates"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    
+    # Add to manager
+    ws_manager.add_connection(connection_id, websocket)
+    ws_manager.join_room(connection_id, f"metric_{metric_name}")
+    
+    try:
+        # Validate metric exists
+        if not await metrics.metric_exists(metric_name):
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Metric {metric_name} not found"
+            })
+            return
+        
+        # Send metric updates
+        while True:
+            value = await metrics.get_metric_value(metric_name)
+            
+            await websocket.send_json({
+                "type": "metric_update",
+                "metric": metric_name,
+                "value": value,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            await asyncio.sleep(settings.UPDATE_INTERVAL)
+            
+    except Exception as e:
+        app.logger.error(f"Metric WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+
+# Server-Sent Events endpoint (alternative to WebSocket)
+@app.get("/api/stream/events")
+async def stream_events(request):
+    """Server-Sent Events stream for real-time updates"""
+    async def event_generator():
+        yield "event: connected\n"
+        yield f"data: {json.dumps({'status': 'connected'})}\n\n"
+        
+        while True:
+            metrics_data = await metrics.get_live_snapshot()
+            
+            yield "event: update\n"
+            yield f"data: {json.dumps(metrics_data)}\n\n"
+            
+            await asyncio.sleep(settings.UPDATE_INTERVAL)
+    
+    return StreamResponse(
+        event_generator(),
+        content_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+# Admin endpoints
+@app.post("/api/admin/reset-metrics")
+async def reset_metrics(request):
+    """Reset all metrics (admin only)"""
+    # TODO: Add authentication check
+    await metrics.reset_all()
+    return {"message": "Metrics reset successfully"}
+
+@app.post("/api/admin/force-collection")
+async def force_data_collection(request):
+    """Force immediate data collection"""
+    task_id = await app.add_background_task(
+        "collect_metrics",
+        category="data",
+        priority=TaskPriority.HIGH
+    )
+    
+    return {"task_id": task_id, "status": "collection_started"}
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize application on startup"""
+    # Initialize data collectors
+    await collectors.initialize_all()
+    
+    # Start background workers
+    await app.start_task_workers("data", worker_count=3)
+    await app.start_task_workers("maintenance", worker_count=1)
+    
+    # Schedule periodic tasks
+    asyncio.create_task(schedule_periodic_tasks())
+    
+    # Initialize cache
+    await cache.initialize()
+    
+    app.logger.info(f"🚀 {{ project.name }} dashboard started")
+
+async def schedule_periodic_tasks():
+    """Schedule periodic data collection and cleanup"""
+    while True:
+        # Collect metrics every minute
+        await app.add_background_task("collect_metrics", category="data")
+        
+        # Aggregate data every 5 minutes
+        if datetime.now().minute % 5 == 0:
+            await app.add_background_task(
+                "aggregate_data",
+                category="data",
+                time_window="5m"
+            )
+        
+        # Cleanup old data daily at 2 AM
+        if datetime.now().hour == 2 and datetime.now().minute == 0:
+            await app.add_background_task(
+                "cleanup_old_data",
+                category="maintenance",
+                days_to_keep=settings.DATA_RETENTION_DAYS
+            )
+        
+        await asyncio.sleep(60)  # Check every minute
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    await collectors.shutdown_all()
+    await cache.close()
+    await app.task_queue.shutdown()
+    app.logger.info("👋 {{ project.name }} dashboard shutting down")
+
+if __name__ == "__main__":
+    import uuid
+    from gobstopper.http.response import Response, StreamResponse
+    
+    print("=" * 50)
+    print("{{ project.name }} - Real-time Dashboard")
+    print("=" * 50)
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Dashboard: http://localhost:8000")
+    print(f"API Health: http://localhost:8000/api/health")
+    print(f"WebSocket: ws://localhost:8000/ws/dashboard")

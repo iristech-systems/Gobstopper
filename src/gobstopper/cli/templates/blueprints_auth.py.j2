@@ -1,0 +1,323 @@
+"""
+Authentication Blueprint
+Handles user authentication, registration, and session management
+"""
+
+from gobstopper.core.blueprint import Blueprint
+from gobstopper.http.response import JSONResponse, Response
+from core.auth import AuthManager, hash_password, verify_password, create_session
+from core.database import get_user_by_email, create_user, get_user_by_id
+from core.validators import validate_email, validate_password
+
+# Create blueprint
+auth_bp = Blueprint("auth")
+
+# Initialize auth manager
+auth_manager = AuthManager()
+
+@auth_bp.get("/login")
+async def login_form(request):
+    """Display login form"""
+    return await request.app.render_template("auth/login.html")
+
+@auth_bp.post("/login")
+async def login(request):
+    """Process login request"""
+    try:
+        data = await request.get_form()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        
+        # Validate input
+        if not email or not password:
+            return await request.app.render_template("auth/login.html",
+                error="Email and password are required"
+            ), 400
+        
+        if not validate_email(email):
+            return await request.app.render_template("auth/login.html",
+                error="Invalid email format"
+            ), 400
+        
+        # Authenticate user
+        user = await get_user_by_email(email)
+        if not user or not verify_password(password, user.password_hash):
+            return await request.app.render_template("auth/login.html",
+                error="Invalid email or password"
+            ), 401
+        
+        # Create session
+        session_id = await create_session(user.id)
+        
+        # Set session cookie and redirect
+        response = Response("", status_code=302, headers={"Location": "/dashboard"})
+        response.set_cookie(
+            "session_id", 
+            session_id, 
+            httponly=True, 
+            secure=True, 
+            samesite="strict"
+        )
+        
+        return response
+        
+    except Exception as e:
+        request.app.logger.error(f"Login error: {e}")
+        return await request.app.render_template("auth/login.html",
+            error="An error occurred during login"
+        ), 500
+
+@auth_bp.get("/register")
+async def register_form(request):
+    """Display registration form"""
+    return await request.app.render_template("auth/register.html")
+
+@auth_bp.post("/register")
+async def register(request):
+    """Process registration request"""
+    try:
+        data = await request.get_form()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        confirm_password = data.get("confirm_password", "")
+        name = data.get("name", "").strip()
+        
+        # Validate input
+        errors = []
+        
+        if not name:
+            errors.append("Name is required")
+        
+        if not email:
+            errors.append("Email is required")
+        elif not validate_email(email):
+            errors.append("Invalid email format")
+        else:
+            # Check if user already exists
+            existing_user = await get_user_by_email(email)
+            if existing_user:
+                errors.append("Email already registered")
+        
+        if not password:
+            errors.append("Password is required")
+        elif not validate_password(password):
+            errors.append("Password must be at least 8 characters with letters and numbers")
+        elif password != confirm_password:
+            errors.append("Passwords do not match")
+        
+        if errors:
+            return await request.app.render_template("auth/register.html",
+                errors=errors, name=name, email=email
+            ), 400
+        
+        # Create user
+        password_hash = hash_password(password)
+        user = await create_user(
+            email=email,
+            name=name,
+            password_hash=password_hash
+        )
+        
+        # Create session and login
+        session_id = await create_session(user.id)
+        
+        response = Response("", status_code=302, headers={"Location": "/dashboard"})
+        response.set_cookie(
+            "session_id", 
+            session_id, 
+            httponly=True, 
+            secure=True, 
+            samesite="strict"
+        )
+        
+        return response
+        
+    except Exception as e:
+        request.app.logger.error(f"Registration error: {e}")
+        return await request.app.render_template("auth/register.html",
+            errors=["An error occurred during registration"]
+        ), 500
+
+@auth_bp.post("/logout")
+async def logout(request):
+    """Process logout request"""
+    try:
+        session_id = request.cookies.get("session_id")
+        if session_id:
+            await auth_manager.invalidate_session(session_id)
+        
+        response = Response("", status_code=302, headers={"Location": "/"})
+        response.delete_cookie("session_id")
+        
+        return response
+        
+    except Exception as e:
+        request.app.logger.error(f"Logout error: {e}")
+        return Response("", status_code=302, headers={"Location": "/"})
+
+@auth_bp.get("/profile")
+async def profile(request):
+    """Display user profile"""
+    user = await auth_manager.get_current_user(request)
+    if not user:
+        return Response("", status_code=302, headers={"Location": "/auth/login"})
+    
+    return await request.app.render_template("auth/profile.html", user=user)
+
+@auth_bp.post("/profile")
+async def update_profile(request):
+    """Update user profile"""
+    user = await auth_manager.get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    try:
+        data = await request.get_form()
+        name = data.get("name", "").strip()
+        
+        # Update user
+        await auth_manager.update_user(user.id, name=name)
+        
+        return Response("", status_code=302, headers={"Location": "/auth/profile?updated=1"})
+        
+    except Exception as e:
+        request.app.logger.error(f"Profile update error: {e}")
+        return await request.app.render_template("auth/profile.html",
+            user=user, error="Failed to update profile"
+        ), 500
+
+@auth_bp.get("/change-password")
+async def change_password_form(request):
+    """Display change password form"""
+    user = await auth_manager.get_current_user(request)
+    if not user:
+        return Response("", status_code=302, headers={"Location": "/auth/login"})
+    
+    return await request.app.render_template("auth/change_password.html")
+
+@auth_bp.post("/change-password")
+async def change_password(request):
+    """Process password change"""
+    user = await auth_manager.get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    try:
+        data = await request.get_form()
+        current_password = data.get("current_password", "")
+        new_password = data.get("new_password", "")
+        confirm_password = data.get("confirm_password", "")
+        
+        # Validate current password
+        if not verify_password(current_password, user.password_hash):
+            return await request.app.render_template("auth/change_password.html",
+                error="Current password is incorrect"
+            ), 400
+        
+        # Validate new password
+        errors = []
+        if not validate_password(new_password):
+            errors.append("Password must be at least 8 characters with letters and numbers")
+        if new_password != confirm_password:
+            errors.append("New passwords do not match")
+        
+        if errors:
+            return await request.app.render_template("auth/change_password.html",
+                errors=errors
+            ), 400
+        
+        # Update password
+        new_password_hash = hash_password(new_password)
+        await auth_manager.update_user(user.id, password_hash=new_password_hash)
+        
+        return Response("", status_code=302, headers={
+            "Location": "/auth/profile?password_changed=1"
+        })
+        
+    except Exception as e:
+        request.app.logger.error(f"Password change error: {e}")
+        return await request.app.render_template("auth/change_password.html",
+            error="Failed to change password"
+        ), 500
+
+# API endpoints for authentication
+@auth_bp.post("/api/token")
+async def get_token(request):
+    """Get JWT token for API access"""
+    try:
+        data = await request.get_json()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        
+        if not email or not password:
+            return JSONResponse({
+                "error": "Email and password are required"
+            }, status_code=400)
+        
+        # Authenticate user
+        user = await get_user_by_email(email)
+        if not user or not verify_password(password, user.password_hash):
+            return JSONResponse({
+                "error": "Invalid email or password"
+            }, status_code=401)
+        
+        # Generate JWT token
+        token = await auth_manager.create_jwt_token(user)
+        
+        return JSONResponse({
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name
+            }
+        })
+        
+    except Exception as e:
+        request.app.logger.error(f"Token generation error: {e}")
+        return JSONResponse({
+            "error": "Token generation failed"
+        }, status_code=500)
+
+@auth_bp.get("/api/me")
+async def get_current_user_api(request):
+    """Get current user info via API"""
+    user = await auth_manager.get_current_user_from_jwt(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    return JSONResponse({
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "created_at": user.created_at.isoformat()
+    })
+
+# Utility functions for other blueprints
+def require_auth(func):
+    """Decorator to require authentication"""
+    async def wrapper(request, *args, **kwargs):
+        user = await auth_manager.get_current_user(request)
+        if not user:
+            return Response("", status_code=302, headers={"Location": "/auth/login"})
+        
+        # Inject user into request for handler to use
+        request.user = user
+        return await func(request, *args, **kwargs)
+    
+    return wrapper
+
+def require_api_auth(func):
+    """Decorator to require API authentication"""
+    async def wrapper(request, *args, **kwargs):
+        user = await auth_manager.get_current_user_from_jwt(request)
+        if not user:
+            return JSONResponse({"error": "Authentication required"}, status_code=401)
+        
+        # Inject user into request for handler to use
+        request.user = user
+        return await func(request, *args, **kwargs)
+    
+    return wrapper

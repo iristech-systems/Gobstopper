@@ -1,0 +1,318 @@
+"""
+Content Management Models
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
+import json
+
+
+class ContentStatus(Enum):
+    """Content publication status"""
+    DRAFT = "draft"
+    REVIEW = "review"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
+
+
+class ContentType(Enum):
+    """Built-in content types"""
+    POST = "post"
+    PAGE = "page"
+    MEDIA = "media"
+    COMMENT = "comment"
+
+
+@dataclass
+class User:
+    """User model"""
+    id: str
+    username: str
+    email: str
+    is_staff: bool = False
+    is_active: bool = True
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    last_login: Optional[datetime] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+            "is_staff": self.is_staff,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat(),
+            "last_login": self.last_login.isoformat() if self.last_login else None
+        }
+
+
+@dataclass
+class BaseContent:
+    """Base content model"""
+    id: str
+    title: str
+    slug: str
+    content_type: str
+    status: ContentStatus
+    author_id: str
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    published_at: Optional[datetime] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    featured_image: Optional[str] = None
+    view_count: int = 0
+    
+    @property
+    def is_published(self) -> bool:
+        return self.status == ContentStatus.PUBLISHED
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "slug": self.slug,
+            "content_type": self.content_type,
+            "status": self.status.value,
+            "author_id": self.author_id,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "meta_title": self.meta_title,
+            "meta_description": self.meta_description,
+            "tags": self.tags,
+            "featured_image": self.featured_image,
+            "view_count": self.view_count
+        }
+
+
+@dataclass
+class Post(BaseContent):
+    """Blog post model"""
+    body: str = ""
+    excerpt: str = ""
+    category: Optional[str] = None
+    allow_comments: bool = True
+    featured: bool = False
+    
+    def __post_init__(self):
+        if not self.excerpt and self.body:
+            # Auto-generate excerpt from first 200 characters
+            self.excerpt = self.body[:200] + "..." if len(self.body) > 200 else self.body
+    
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "body": self.body,
+            "excerpt": self.excerpt,
+            "category": self.category,
+            "allow_comments": self.allow_comments,
+            "featured": self.featured
+        })
+        return data
+
+
+@dataclass
+class Page(BaseContent):
+    """Static page model"""
+    body: str = ""
+    template: str = "page.html"
+    menu_order: int = 0
+    parent_id: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "body": self.body,
+            "template": self.template,
+            "menu_order": self.menu_order,
+            "parent_id": self.parent_id
+        })
+        return data
+
+
+@dataclass
+class MediaFile:
+    """Media file model"""
+    id: str
+    filename: str
+    original_filename: str
+    file_path: str
+    url: str
+    content_type: str
+    file_size: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    uploader_id: str = ""
+    alt_text: str = ""
+    caption: str = ""
+    uploaded_at: datetime = field(default_factory=datetime.utcnow)
+    
+    @property
+    def is_image(self) -> bool:
+        return self.content_type.startswith('image/')
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "filename": self.filename,
+            "original_filename": self.original_filename,
+            "file_path": self.file_path,
+            "url": self.url,
+            "content_type": self.content_type,
+            "file_size": self.file_size,
+            "width": self.width,
+            "height": self.height,
+            "uploader_id": self.uploader_id,
+            "alt_text": self.alt_text,
+            "caption": self.caption,
+            "uploaded_at": self.uploaded_at.isoformat(),
+            "is_image": self.is_image
+        }
+
+
+@dataclass
+class Comment:
+    """Comment model"""
+    id: str
+    content_id: str
+    author_name: str
+    author_email: str
+    body: str
+    status: str = "approved"  # approved, pending, spam
+    ip_address: str = ""
+    user_agent: str = ""
+    parent_id: Optional[str] = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    
+    @property
+    def is_approved(self) -> bool:
+        return self.status == "approved"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "content_id": self.content_id,
+            "author_name": self.author_name,
+            "author_email": self.author_email,
+            "body": self.body,
+            "status": self.status,
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "parent_id": self.parent_id,
+            "created_at": self.created_at.isoformat(),
+            "is_approved": self.is_approved
+        }
+
+
+@dataclass
+class Category:
+    """Content category model"""
+    id: str
+    name: str
+    slug: str
+    description: str = ""
+    parent_id: Optional[str] = None
+    post_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "slug": self.slug,
+            "description": self.description,
+            "parent_id": self.parent_id,
+            "post_count": self.post_count
+        }
+
+
+@dataclass
+class Tag:
+    """Content tag model"""
+    id: str
+    name: str
+    slug: str
+    description: str = ""
+    post_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "slug": self.slug,
+            "description": self.description,
+            "post_count": self.post_count
+        }
+
+
+@dataclass
+class Session:
+    """User session model"""
+    session_id: str
+    user_id: str
+    expires_at: datetime
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    ip_address: str = ""
+    user_agent: str = ""
+    
+    def is_valid(self) -> bool:
+        return datetime.utcnow() < self.expires_at
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "expires_at": self.expires_at.isoformat(),
+            "created_at": self.created_at.isoformat(),
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "is_valid": self.is_valid()
+        }
+
+
+# Content type registry
+CONTENT_TYPES = {
+    "post": Post,
+    "page": Page,
+    "media": MediaFile,
+    "comment": Comment
+}
+
+
+def get_content_types() -> List[Dict[str, str]]:
+    """Get list of available content types"""
+    return [
+        {"name": "post", "display_name": "Blog Post", "description": "Articles and blog entries"},
+        {"name": "page", "display_name": "Static Page", "description": "About, Contact, and other pages"},
+        {"name": "media", "display_name": "Media File", "description": "Images, documents, and files"}
+    ]
+
+
+def create_content_instance(content_type: str, **data) -> BaseContent:
+    """Create content instance based on type"""
+    if content_type in CONTENT_TYPES:
+        content_class = CONTENT_TYPES[content_type]
+        return content_class(**data)
+    else:
+        raise ValueError(f"Unknown content type: {content_type}")
+
+
+# Database connection placeholder
+_database_connection = None
+
+
+async def initialize_database():
+    """Initialize database connection"""
+    global _database_connection
+    # Database initialization code here
+    print("Database initialized")
+
+
+async def close_database_connections():
+    """Close database connections"""
+    global _database_connection
+    # Cleanup code here
+    print("Database connections closed")

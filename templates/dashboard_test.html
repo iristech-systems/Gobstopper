@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Test Dashboard - {% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1>{{ page_title | default(value="Test Dashboard") }}</h1>
+    
+    <!-- Simple metrics test -->
+    <div class="metrics">
+        {% for metric in dashboard_data.metrics %}
+        <div class="metric">
+            <h3>{{ metric.name }}</h3>
+            <p>{{ metric.value }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

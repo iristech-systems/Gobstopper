@@ -1,0 +1,38 @@
+"""
+{{ project.name }} - Blueprints Architecture
+Blueprint initialization and registration
+"""
+
+# Blueprint version
+__version__ = "1.0.0"
+
+# Import all blueprints
+from .auth import auth_bp
+from .api import api_bp
+from .admin import admin_bp
+from .public import public_bp
+{% if 'websockets' in project.features %}from .websockets import ws_bp{% endif %}
+
+# Blueprint registry
+BLUEPRINTS = [
+    (public_bp, {}),  # No URL prefix for public routes
+    (auth_bp, {"url_prefix": "/auth"}),
+    (api_bp, {"url_prefix": "/api/v1"}),
+    (admin_bp, {"url_prefix": "/admin"}),
+    {% if 'websockets' in project.features %}(ws_bp, {"url_prefix": "/ws"}),{% endif %}
+]
+
+def register_blueprints(app):
+    """Register all blueprints with the Gobstopper application"""
+    for blueprint, options in BLUEPRINTS:
+        app.register_blueprint(blueprint, **options)
+
+__all__ = [
+    "auth_bp",
+    "api_bp", 
+    "admin_bp",
+    "public_bp",
+    {% if 'websockets' in project.features %}"ws_bp",{% endif %}
+    "BLUEPRINTS",
+    "register_blueprints"
+]

@@ -1,0 +1,304 @@
+"""
+{{ project.name }} - Modular Architecture
+Built with Gobstopper Framework
+
+This application demonstrates a modular architecture where
+functionality is organized into separate modules with clear
+separation of concerns.
+"""
+
+import asyncio
+from datetime import datetime
+from gobstopper import Gobstopper
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+
+# Import modules
+from modules.auth import auth_routes, auth_middleware
+from modules.api import api_routes
+from modules.admin import admin_routes
+from modules.public import public_routes
+{% if 'websockets' in project.features %}from modules.websockets import websocket_routes{% endif %}
+from modules.database import DatabaseManager
+from modules.tasks import TaskManager
+{% if usecase.name == 'data-science' %}from modules.ml import ml_routes, MLManager{% endif %}
+{% if usecase.name == 'content-management' %}from modules.content import content_routes, ContentManager{% endif %}
+
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize managers
+db_manager = DatabaseManager()
+task_manager = TaskManager()
+{% if usecase.name == 'data-science' %}ml_manager = MLManager(){% endif %}
+{% if usecase.name == 'content-management' %}content_manager = ContentManager(){% endif %}
+
+# Initialize templates
+app.init_templates("templates", use_rust=True)
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(
+    secret_key=settings.SECRET_KEY,
+    csrf_protection=True
+), priority=100)
+
+app.add_middleware(CORSMiddleware(
+    origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True
+), priority=95)
+
+# Add authentication middleware
+app.add_middleware(auth_middleware, priority=80)
+
+app.add_middleware(RustStaticMiddleware(
+    directory="static",
+    url_prefix="/static"
+), priority=70)
+
+# Context processors
+@app.context_processor
+def inject_globals():
+    return {
+        "app_name": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT,
+        "user": None  # Will be populated by auth middleware
+    }
+
+{% if usecase.name == 'data-science' %}
+@app.context_processor
+def inject_ml_info():
+    return {
+        "loaded_models": ml_manager.get_loaded_models(),
+        "model_count": ml_manager.get_model_count()
+    }
+{% elif usecase.name == 'content-management' %}
+@app.context_processor
+def inject_content_info():
+    return {
+        "content_types": content_manager.get_content_types(),
+        "published_count": content_manager.get_published_count()
+    }
+{% endif %}
+
+# Register routes from modules
+def register_routes():
+    """Register routes from all modules"""
+    
+    # Public routes (homepage, about, etc.)
+    public_routes.register_routes(app)
+    
+    # Authentication routes
+    auth_routes.register_routes(app, url_prefix="/auth")
+    
+    # API routes
+    api_routes.register_routes(app, url_prefix="/api/v1")
+    
+    # Admin routes
+    admin_routes.register_routes(app, url_prefix="/admin")
+    
+    {% if 'websockets' in project.features %}
+    # WebSocket routes
+    websocket_routes.register_routes(app, url_prefix="/ws")
+    {% endif %}
+    
+    {% if usecase.name == 'data-science' %}
+    # ML-specific routes
+    ml_routes.register_routes(app, url_prefix="/ml")
+    {% elif usecase.name == 'content-management' %}
+    # Content management routes
+    content_routes.register_routes(app, url_prefix="/content")
+    {% endif %}
+
+# Background tasks
+{% if usecase.name == 'data-science' %}
+@app.task("train_model", category="ml")
+async def train_model_task(model_type: str, dataset_id: str, hyperparameters: dict):
+    """Background task for model training"""
+    return await ml_manager.train_model(model_type, dataset_id, hyperparameters)
+
+@app.task("preprocess_data", category="data")
+async def preprocess_data_task(dataset_id: str, config: dict):
+    """Background task for data preprocessing"""
+    return await ml_manager.preprocess_data(dataset_id, config)
+{% elif usecase.name == 'real-time-dashboard' %}
+@app.task("collect_metrics", category="data")
+async def collect_metrics_task():
+    """Collect metrics from various sources"""
+    return await task_manager.collect_metrics()
+
+@app.task("aggregate_data", category="data")
+async def aggregate_data_task(time_window: str):
+    """Aggregate data for specific time window"""
+    return await task_manager.aggregate_data(time_window)
+{% elif usecase.name == 'content-management' %}
+@app.task("index_content", category="search")
+async def index_content_task(content_id: str):
+    """Index content for search"""
+    return await content_manager.index_content(content_id)
+
+@app.task("process_media", category="media")
+async def process_media_task(media_id: str):
+    """Process uploaded media files"""
+    return await content_manager.process_media(media_id)
+{% else %}
+@app.task("process_data", category="default")
+async def process_data_task(data: dict):
+    """Generic data processing task"""
+    return await task_manager.process_data(data)
+{% endif %}
+
+@app.task("cleanup_old_data", category="maintenance")
+async def cleanup_old_data_task(days: int = 30):
+    """Clean up old data"""
+    return await task_manager.cleanup_old_data(days)
+
+@app.task("send_notification", category="notifications")
+async def send_notification_task(recipient: str, message: dict, channel: str = "email"):
+    """Send notifications"""
+    return await task_manager.send_notification(recipient, message, channel)
+
+# Error handlers
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    """Handle 404 errors"""
+    return await app.render_template("errors/404.html"), 404
+
+@app.exception_handler(500)
+async def server_error_handler(request, exc):
+    """Handle 500 errors"""
+    app.logger.error(f"Server error: {exc}")
+    return await app.render_template("errors/500.html"), 500
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle all other exceptions"""
+    app.logger.error(f"Unhandled exception: {exc}")
+    return await app.render_template("errors/500.html"), 500
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize application on startup"""
+    
+    # Initialize database manager
+    await db_manager.initialize()
+    
+    # Initialize task manager
+    await task_manager.initialize()
+    
+    {% if usecase.name == 'data-science' %}
+    # Initialize ML manager
+    await ml_manager.initialize()
+    {% elif usecase.name == 'content-management' %}
+    # Initialize content manager
+    await content_manager.initialize()
+    {% endif %}
+    
+    # Register all routes
+    register_routes()
+    
+    # Start background workers
+    await app.start_task_workers("default", worker_count=2)
+    {% if usecase.name == 'data-science' %}
+    await app.start_task_workers("ml", worker_count=3)
+    await app.start_task_workers("data", worker_count=2)
+    {% elif usecase.name == 'real-time-dashboard' %}
+    await app.start_task_workers("data", worker_count=3)
+    {% elif usecase.name == 'content-management' %}
+    await app.start_task_workers("search", worker_count=1)
+    await app.start_task_workers("media", worker_count=2)
+    {% endif %}
+    await app.start_task_workers("maintenance", worker_count=1)
+    await app.start_task_workers("notifications", worker_count=1)
+    
+    # Schedule periodic tasks
+    asyncio.create_task(schedule_periodic_tasks())
+    
+    app.logger.info(f"🚀 {{ project.name }} started (Modular Architecture)")
+    app.logger.info(f"Modules: {get_loaded_modules()}")
+
+async def schedule_periodic_tasks():
+    """Schedule periodic maintenance tasks"""
+    while True:
+        {% if usecase.name == 'data-science' %}
+        # Cleanup old training data every day at 2 AM
+        if datetime.now().hour == 2 and datetime.now().minute == 0:
+            await app.add_background_task(
+                "cleanup_old_data",
+                category="maintenance",
+                days=30
+            )
+        {% elif usecase.name == 'real-time-dashboard' %}
+        # Collect metrics every 5 minutes
+        if datetime.now().minute % 5 == 0:
+            await app.add_background_task(
+                "collect_metrics",
+                category="data"
+            )
+        {% elif usecase.name == 'content-management' %}
+        # Index new content every hour
+        if datetime.now().minute == 0:
+            await content_manager.index_pending_content()
+        {% endif %}
+        
+        # General cleanup weekly on Sunday at 3 AM
+        if (datetime.now().weekday() == 6 and 
+            datetime.now().hour == 3 and 
+            datetime.now().minute == 0):
+            await app.add_background_task(
+                "cleanup_old_data",
+                category="maintenance"
+            )
+        
+        await asyncio.sleep(60)  # Check every minute
+
+def get_loaded_modules():
+    """Get list of loaded modules for startup info"""
+    modules = ["auth", "api", "admin", "public", "database", "tasks"]
+    {% if 'websockets' in project.features %}modules.append("websockets"){% endif %}
+    {% if usecase.name == 'data-science' %}modules.append("ml"){% endif %}
+    {% if usecase.name == 'content-management' %}modules.append("content"){% endif %}
+    return ", ".join(modules)
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    
+    {% if usecase.name == 'data-science' %}
+    # Cleanup ML manager
+    await ml_manager.cleanup()
+    {% elif usecase.name == 'content-management' %}
+    # Cleanup content manager
+    await content_manager.cleanup()
+    {% endif %}
+    
+    # Cleanup task manager
+    await task_manager.cleanup()
+    
+    # Cleanup database manager
+    await db_manager.cleanup()
+    
+    # Shutdown task queue
+    await app.task_queue.shutdown()
+    
+    app.logger.info("👋 {{ project.name }} shutting down")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("{{ project.name }} - Modular Architecture")
+    print("=" * 60)
+    print("Architecture: Modular design with separation of concerns")
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Application: http://localhost:8000")
+    {% if usecase.name == 'data-science' %}
+    print(f"ML Interface: http://localhost:8000/ml")
+    {% elif usecase.name == 'content-management' %}
+    print(f"Admin Panel: http://localhost:8000/admin")
+    print(f"Content: http://localhost:8000/content")
+    {% endif %}
+    print(f"API: http://localhost:8000/api/v1")

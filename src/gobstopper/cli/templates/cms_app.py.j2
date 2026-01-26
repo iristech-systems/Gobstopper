@@ -1,0 +1,568 @@
+"""
+{{ project.name }} - Content Management System
+Built with Gobstopper Framework
+"""
+
+import asyncio
+from datetime import datetime
+from typing import Optional
+from gobstopper import Gobstopper
+from gobstopper.websocket.manager import WebSocketManager
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+from gobstopper.tasks.queue import TaskPriority
+
+# Import project modules
+from content import models, managers, search, media
+from auth import authentication, authorization, sessions
+from api import content_api, media_api, user_api, analytics
+from tasks import indexing, media_processing, email_notifications, backups
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize templates
+app.init_templates("frontend/templates", use_rust=True)
+
+# WebSocket manager for real-time content updates
+ws_manager = WebSocketManager()
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(secret_key=settings.SECRET_KEY), priority=100)
+app.add_middleware(
+    CORSMiddleware(
+        origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True
+    ),
+    priority=95
+)
+app.add_middleware(
+    RustStaticMiddleware(
+        directory="frontend/static",
+        url_prefix="/static"
+    ),
+    priority=90
+)
+
+# Context processors
+@app.context_processor
+def inject_app_info():
+    return {
+        "app_name": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "user": None,  # Will be populated by auth middleware
+        "site_name": settings.SITE_NAME,
+        "admin_url": "/admin"
+    }
+
+@app.context_processor
+def inject_content_helpers():
+    return {
+        "content_types": models.get_content_types(),
+        "navigation_menu": managers.get_navigation_menu(),
+        "recent_content": managers.get_recent_content(limit=5)
+    }
+
+# Background tasks for content management
+@app.task("index_content", category="search")
+async def index_content_task(content_id: str):
+    """Index content for search"""
+    return await indexing.index_content(content_id)
+
+@app.task("process_media", category="media")
+async def process_media_task(media_id: str):
+    """Process uploaded media files"""
+    return await media_processing.process_media(media_id)
+
+@app.task("send_notification", category="notifications")
+async def send_notification_task(user_id: str, notification_type: str, data: dict):
+    """Send email notifications"""
+    return await email_notifications.send_notification(user_id, notification_type, data)
+
+@app.task("backup_content", category="maintenance")
+async def backup_content_task():
+    """Backup content to external storage"""
+    return await backups.backup_all_content()
+
+@app.task("optimize_images", category="media")
+async def optimize_images_task(batch_size: int = 50):
+    """Optimize existing images"""
+    return await media_processing.optimize_images_batch(batch_size)
+
+# Public content routes
+@app.get("/")
+async def homepage(request):
+    """Homepage with featured content"""
+    featured_content = await managers.get_featured_content()
+    latest_posts = await managers.get_latest_posts(limit=10)
+    
+    return await app.render_template("homepage.html",
+        featured_content=featured_content,
+        latest_posts=latest_posts
+    )
+
+@app.get("/blog")
+async def blog_index(request):
+    """Blog posts listing"""
+    page = int(request.args.get("page", [1])[0])
+    category = request.args.get("category", [None])[0]
+    
+    posts = await managers.get_blog_posts(page=page, category=category)
+    categories = await managers.get_blog_categories()
+    
+    return await app.render_template("blog/index.html",
+        posts=posts,
+        categories=categories,
+        current_category=category
+    )
+
+@app.get("/blog/<slug>")
+async def blog_post(request, slug: str):
+    """Individual blog post"""
+    post = await managers.get_post_by_slug(slug)
+    if not post:
+        return await app.render_template("404.html"), 404
+    
+    # Track view
+    await analytics.track_content_view(post.id, request.client_host)
+    
+    related_posts = await managers.get_related_posts(post.id, limit=5)
+    
+    return await app.render_template("blog/post.html",
+        post=post,
+        related_posts=related_posts
+    )
+
+@app.get("/pages/<slug>")
+async def page(request, slug: str):
+    """Static pages"""
+    page = await managers.get_page_by_slug(slug)
+    if not page or not page.is_published:
+        return await app.render_template("404.html"), 404
+        
+    await analytics.track_content_view(page.id, request.client_host)
+    
+    return await app.render_template("page.html", page=page)
+
+@app.get("/search")
+async def search_content(request):
+    """Search content"""
+    query = request.args.get("q", [""])[0]
+    content_type = request.args.get("type", [None])[0]
+    page = int(request.args.get("page", [1])[0])
+    
+    if query:
+        results = await search.search_content(query, content_type, page)
+    else:
+        results = {"items": [], "total": 0, "page": page, "pages": 0}
+    
+    return await app.render_template("search.html",
+        query=query,
+        results=results,
+        content_types=models.get_content_types()
+    )
+
+# Authentication routes
+@app.get("/login")
+async def login_form(request):
+    """Login form"""
+    return await app.render_template("auth/login.html")
+
+@app.post("/login")
+async def login(request):
+    """Process login"""
+    data = await request.get_form()
+    username = data.get("username")
+    password = data.get("password")
+    
+    user = await authentication.authenticate(username, password)
+    if user:
+        session_id = await sessions.create_session(user.id)
+        response = {"redirect": "/admin"}
+        # Set session cookie
+        return response, 200, {"Set-Cookie": f"session_id={session_id}; HttpOnly"}
+    else:
+        return await app.render_template("auth/login.html",
+            error="Invalid credentials"
+        ), 401
+
+@app.post("/logout")
+async def logout(request):
+    """Logout user"""
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        await sessions.invalidate_session(session_id)
+    
+    return {"redirect": "/"}, 200, {"Set-Cookie": "session_id=; expires=Thu, 01 Jan 1970 00:00:00 GMT"}
+
+# Admin interface
+@app.get("/admin")
+async def admin_dashboard(request):
+    """Admin dashboard"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return await app.render_template("auth/login.html"), 401
+    
+    stats = await analytics.get_dashboard_stats()
+    recent_content = await managers.get_recent_content(limit=10)
+    
+    return await app.render_template("admin/dashboard.html",
+        stats=stats,
+        recent_content=recent_content
+    )
+
+@app.get("/admin/content")
+async def admin_content_list(request):
+    """Admin content list"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    content_type = request.args.get("type", [None])[0]
+    page = int(request.args.get("page", [1])[0])
+    
+    content = await managers.get_admin_content_list(content_type, page, user.id)
+    
+    return await app.render_template("admin/content/list.html",
+        content=content,
+        content_types=models.get_content_types()
+    )
+
+@app.get("/admin/content/new")
+async def admin_new_content(request):
+    """New content form"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    content_type = request.args.get("type", ["post"])[0]
+    
+    return await app.render_template("admin/content/form.html",
+        content=None,
+        content_type=content_type,
+        action="create"
+    )
+
+@app.post("/admin/content/new")
+async def admin_create_content(request):
+    """Create new content"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    data = await request.get_form()
+    
+    content = await managers.create_content(
+        title=data.get("title"),
+        content_type=data.get("content_type"),
+        body=data.get("body"),
+        author_id=user.id,
+        status=data.get("status", "draft"),
+        tags=data.get("tags", "").split(",")
+    )
+    
+    # Queue indexing task
+    if content.status == "published":
+        await app.add_background_task(
+            "index_content",
+            category="search",
+            content_id=content.id
+        )
+    
+    return {"redirect": f"/admin/content/{content.id}"}, 201
+
+@app.get("/admin/content/<content_id>")
+async def admin_edit_content(request, content_id: str):
+    """Edit content form"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    content = await managers.get_content_by_id(content_id)
+    if not content:
+        return await app.render_template("404.html"), 404
+        
+    # Check permissions
+    if not authorization.can_edit_content(user, content):
+        return {"error": "Permission denied"}, 403
+    
+    return await app.render_template("admin/content/form.html",
+        content=content,
+        content_type=content.content_type,
+        action="edit"
+    )
+
+@app.post("/admin/content/<content_id>")
+async def admin_update_content(request, content_id: str):
+    """Update content"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    content = await managers.get_content_by_id(content_id)
+    if not content or not authorization.can_edit_content(user, content):
+        return {"error": "Unauthorized"}, 403
+    
+    data = await request.get_form()
+    
+    updated_content = await managers.update_content(
+        content_id=content_id,
+        title=data.get("title"),
+        body=data.get("body"),
+        status=data.get("status"),
+        tags=data.get("tags", "").split(",")
+    )
+    
+    # Re-index if published
+    if updated_content.status == "published":
+        await app.add_background_task(
+            "index_content",
+            category="search",
+            content_id=content_id
+        )
+    
+    return {"redirect": f"/admin/content/{content_id}"}
+
+@app.delete("/admin/content/<content_id>")
+async def admin_delete_content(request, content_id: str):
+    """Delete content"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    content = await managers.get_content_by_id(content_id)
+    if not content or not authorization.can_delete_content(user, content):
+        return {"error": "Unauthorized"}, 403
+    
+    await managers.delete_content(content_id)
+    return {"message": "Content deleted"}
+
+# Media management
+@app.get("/admin/media")
+async def admin_media_list(request):
+    """Media library"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    page = int(request.args.get("page", [1])[0])
+    media_type = request.args.get("type", [None])[0]
+    
+    media_items = await media.get_media_list(page, media_type)
+    
+    return await app.render_template("admin/media/list.html",
+        media_items=media_items
+    )
+
+@app.post("/admin/media/upload")
+async def admin_upload_media(request):
+    """Upload media files"""
+    user = await get_current_user(request)
+    if not user or not user.is_staff:
+        return {"error": "Unauthorized"}, 401
+    
+    form = await request.get_form()
+    file_data = form.get("file")
+    
+    if not file_data:
+        return {"error": "No file uploaded"}, 400
+    
+    # Store media file
+    media_item = await media.store_media_file(file_data, user.id)
+    
+    # Queue processing task
+    await app.add_background_task(
+        "process_media",
+        category="media",
+        media_id=media_item.id
+    )
+    
+    return {
+        "media_id": media_item.id,
+        "url": media_item.url,
+        "status": "processing"
+    }
+
+# API endpoints
+@app.get("/api/content")
+async def api_content_list(request):
+    """API: List content"""
+    page = int(request.args.get("page", [1])[0])
+    content_type = request.args.get("type", [None])[0])
+    published_only = request.args.get("published", [True])[0]
+    
+    content = await content_api.get_content(page, content_type, published_only)
+    return content
+
+@app.get("/api/content/<content_id>")
+async def api_get_content(request, content_id: str):
+    """API: Get specific content"""
+    content = await content_api.get_content_by_id(content_id)
+    if not content:
+        return {"error": "Content not found"}, 404
+    return content
+
+@app.get("/api/search")
+async def api_search(request):
+    """API: Search content"""
+    query = request.args.get("q", [""])[0]
+    content_type = request.args.get("type", [None])[0]
+    page = int(request.args.get("page", [1])[0])
+    
+    if not query:
+        return {"error": "Query parameter required"}, 400
+    
+    results = await search.search_content(query, content_type, page)
+    return results
+
+# WebSocket endpoints for real-time updates
+@app.websocket("/ws/admin/content")
+async def admin_content_updates(websocket):
+    """WebSocket for real-time content updates in admin"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    
+    # Add to manager
+    ws_manager.add_connection(connection_id, websocket)
+    ws_manager.join_room(connection_id, "admin_content")
+    
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "connection_id": connection_id
+        })
+        
+        # Keep connection alive and listen for updates
+        while True:
+            # Content update notifications will be sent from content managers
+            await asyncio.sleep(30)  # Heartbeat
+            
+    except Exception as e:
+        app.logger.error(f"Admin WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+
+@app.websocket("/ws/comments/<content_id>")
+async def content_comments(websocket, content_id: str):
+    """WebSocket for real-time comments on content"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    
+    # Validate content exists
+    content = await managers.get_content_by_id(content_id)
+    if not content:
+        await websocket.send_json({"error": "Content not found"})
+        return
+    
+    # Add to manager
+    ws_manager.add_connection(connection_id, websocket)
+    ws_manager.join_room(connection_id, f"content_{content_id}")
+    
+    try:
+        # Send existing comments
+        comments = await managers.get_content_comments(content_id)
+        await websocket.send_json({
+            "type": "comments",
+            "comments": [c.to_dict() for c in comments]
+        })
+        
+        # Listen for new comments (would be triggered by comment creation)
+        while True:
+            message = await websocket.receive_json()
+            
+            if message.get("type") == "new_comment":
+                # Create new comment
+                comment = await managers.create_comment(
+                    content_id=content_id,
+                    author_name=message.get("author"),
+                    comment_text=message.get("text"),
+                    author_email=message.get("email")
+                )
+                
+                # Broadcast to all connections in this room
+                await ws_manager.broadcast_to_room(f"content_{content_id}", {
+                    "type": "new_comment",
+                    "comment": comment.to_dict()
+                })
+                
+    except Exception as e:
+        app.logger.error(f"Comments WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+
+# Utility functions
+async def get_current_user(request):
+    """Get current authenticated user"""
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        return None
+    
+    session = await sessions.get_session(session_id)
+    if not session or not session.is_valid():
+        return None
+    
+    return await authentication.get_user_by_id(session.user_id)
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize application on startup"""
+    # Initialize database connections
+    await models.initialize_database()
+    
+    # Initialize search index
+    await search.initialize_index()
+    
+    # Start background workers
+    await app.start_task_workers("search", worker_count=2)
+    await app.start_task_workers("media", worker_count=3)
+    await app.start_task_workers("notifications", worker_count=1)
+    await app.start_task_workers("maintenance", worker_count=1)
+    
+    # Schedule periodic tasks
+    asyncio.create_task(schedule_periodic_tasks())
+    
+    app.logger.info(f"🚀 {{ project.name }} CMS started")
+
+async def schedule_periodic_tasks():
+    """Schedule periodic maintenance tasks"""
+    while True:
+        # Backup content daily at 2 AM
+        if datetime.now().hour == 2 and datetime.now().minute == 0:
+            await app.add_background_task(
+                "backup_content",
+                category="maintenance"
+            )
+        
+        # Optimize images weekly on Sunday at 3 AM
+        if (datetime.now().weekday() == 6 and 
+            datetime.now().hour == 3 and 
+            datetime.now().minute == 0):
+            await app.add_background_task(
+                "optimize_images",
+                category="media"
+            )
+        
+        await asyncio.sleep(60)  # Check every minute
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    await models.close_database_connections()
+    await search.close_index()
+    await app.task_queue.shutdown()
+    app.logger.info("👋 {{ project.name }} CMS shutting down")
+
+if __name__ == "__main__":
+    import uuid
+    
+    print("=" * 50)
+    print("{{ project.name }} - Content Management System")
+    print("=" * 50)
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Website: http://localhost:8000")
+    print(f"Admin: http://localhost:8000/admin")
+    print(f"API: http://localhost:8000/api")

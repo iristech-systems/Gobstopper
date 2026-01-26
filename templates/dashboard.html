@@ -1,0 +1,547 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Dashboard - {% endblock %}
+
+{% block head %}
+<style>
+.dashboard {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.dashboard-header {
+    margin-bottom: 2rem;
+}
+
+.dashboard-header h1 {
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+}
+
+.streaming-indicator {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.streaming-enabled {
+    background: linear-gradient(45deg, #e74c3c, #f39c12);
+    color: white;
+    animation: pulse 2s infinite;
+}
+
+.streaming-disabled {
+    background: #95a5a6;
+    color: white;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.metric-card {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border-left: 4px solid #3498db;
+    position: relative;
+    overflow: hidden;
+}
+
+.metric-card.up {
+    border-left-color: #27ae60;
+}
+
+.metric-card.down {
+    border-left-color: #e74c3c;
+}
+
+.metric-name {
+    color: #7f8c8d;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.metric-value {
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+}
+
+.metric-change {
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+.metric-change.up {
+    color: #27ae60;
+}
+
+.metric-change.down {
+    color: #e74c3c;
+}
+
+.metric-change::before {
+    content: '▲ ';
+}
+
+.metric-change.down::before {
+    content: '▼ ';
+}
+
+.dashboard-section {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #ecf0f1;
+    padding-bottom: 0.5rem;
+}
+
+.section-title {
+    color: #2c3e50;
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+.chart-container {
+    position: relative;
+    height: 400px;
+    margin-bottom: 1rem;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+    text-align: left;
+    padding: 0.75rem;
+    border-bottom: 1px solid #ecf0f1;
+}
+
+.data-table th {
+    background: #f8f9fa;
+    font-weight: bold;
+    color: #2c3e50;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.5px;
+}
+
+.data-table tr:hover {
+    background: #f8f9fa;
+}
+
+.activity-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    border-bottom: 1px solid #ecf0f1;
+}
+
+.activity-item:last-child {
+    border-bottom: none;
+}
+
+.activity-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(45deg, #3498db, #9b59b6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    margin-right: 1rem;
+    flex-shrink: 0;
+}
+
+.activity-content {
+    flex: 1;
+}
+
+.activity-user {
+    font-weight: bold;
+    color: #2c3e50;
+    margin-bottom: 0.25rem;
+}
+
+.activity-action {
+    color: #7f8c8d;
+    font-size: 0.9rem;
+}
+
+.activity-time {
+    color: #95a5a6;
+    font-size: 0.8rem;
+    margin-left: 1rem;
+    flex-shrink: 0;
+}
+
+.performance-info {
+    background: #f8f9fa;
+    border-radius: 4px;
+    padding: 1rem;
+    margin-top: 2rem;
+    border-left: 4px solid #f39c12;
+}
+
+.performance-info h3 {
+    margin: 0 0 0.5rem 0;
+    color: #f39c12;
+}
+
+.performance-info p {
+    margin: 0;
+    color: #7f8c8d;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 1rem;
+    background: white;
+    border-radius: 4px;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #2c3e50;
+    display: block;
+}
+
+.stat-label {
+    color: #7f8c8d;
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .dashboard {
+        padding: 0.5rem;
+    }
+    
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .chart-container {
+        height: 300px;
+    }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="dashboard-header">
+        <h1>{{ page_title | default(value="Analytics Dashboard") }}</h1>
+        <div class="streaming-indicator {% if streaming_enabled %}streaming-enabled{% else %}streaming-disabled{% endif %}">
+            {% if streaming_enabled %}
+                🦀 Rust Streaming Active
+            {% else %}
+                📄 Standard Rendering
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Key Metrics Section -->
+    <div class="metrics-grid">
+        {% for metric in dashboard_data.metrics %}
+        <div class="metric-card {{ metric.status }}">
+            <div class="metric-name">{{ metric.name }}</div>
+            <div class="metric-value">
+                {{ metric.value }}
+            </div>
+            <div class="metric-change {{ metric.status }}">{{ metric.change }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Chart Section -->
+    <div class="dashboard-section">
+        <div class="section-header">
+            <h2 class="section-title">📈 Growth Trends</h2>
+            <span class="badge">Last 6 Months</span>
+        </div>
+        <div class="chart-container">
+            <canvas id="growthChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Recent Activity Section -->
+    <div class="dashboard-section">
+        <div class="section-header">
+            <h2 class="section-title">🔔 Recent Activity</h2>
+            <a href="#" class="view-all">View All</a>
+        </div>
+        {% for activity in dashboard_data.recent_activity %}
+        <div class="activity-item">
+            <div class="activity-avatar">{{ activity.initial }}</div>
+            <div class="activity-content">
+                <div class="activity-user">{{ activity.user }}</div>
+                <div class="activity-action">{{ activity.action }}</div>
+            </div>
+            <div class="activity-time">{{ activity.time }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Data Table Section -->
+    <div class="dashboard-section">
+        <div class="section-header">
+            <h2 class="section-title">📊 Monthly Performance</h2>
+            <button class="btn-export">Export CSV</button>
+        </div>
+        <div style="overflow-x: auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Month</th>
+                        <th>Active Users</th>
+                        <th>Revenue</th>
+                        <th>Growth Rate</th>
+                        <th>Conversion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in dashboard_data.chart_data %}
+                    <tr>
+                        <td>{{ row.month }}</td>
+                        <td>{{ row.users }}</td>
+                        <td>{{ row.revenue | currency }}</td>
+                        <td>{{ row.growth_rate | default(value="N/A") }}</td>
+                        <td>{{ row.conversion | default(value="N/A") }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Performance Information -->
+    {% if streaming_enabled %}
+    <div class="performance-info">
+        <h3>🦀 Rust Template Engine Performance</h3>
+        <p>This dashboard is powered by the Rust template engine with streaming capabilities. 
+           Large datasets are rendered progressively, allowing for faster initial page loads 
+           and better user experience with data-intensive applications.</p>
+        
+        <div class="stats-grid">
+            <div class="stat-item">
+                <span class="stat-value">{{ total_data_points }}</span>
+                <div class="stat-label">Data Points Rendered</div>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value">{% if template_engine_info.cache_stats %}{{ template_engine_info.cache_stats.template_cache_size }}{% else %}N/A{% endif %}</span>
+                <div class="stat-label">Templates Cached</div>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value">3</span>
+                <div class="stat-label">Chart Sections</div>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value">{{ dashboard_data.chart_data | length }}</span>
+                <div class="stat-label">Chart Data Points</div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+// Growth Chart
+const ctx = document.getElementById('growthChart').getContext('2d');
+const chartData = JSON.parse('{{ chart_data_json | safe }}');
+
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: chartData.map(item => item.month),
+        datasets: [
+            {
+                label: 'Users',
+                data: chartData.map(item => item.users),
+                borderColor: '#3498db',
+                backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                tension: 0.4,
+                fill: true
+            },
+            {
+                label: 'Revenue',
+                data: chartData.map(item => item.revenue),
+                borderColor: '#27ae60',
+                backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                tension: 0.4,
+                fill: true,
+                yAxisID: 'revenue'
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+            intersect: false,
+            mode: 'index'
+        },
+        plugins: {
+            legend: {
+                position: 'top',
+            },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        if (context.datasetIndex === 1) {
+                            return context.dataset.label + ': $' + context.parsed.y.toLocaleString();
+                        }
+                        return context.dataset.label + ': ' + context.parsed.y.toLocaleString();
+                    }
+                }
+            }
+        },
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: {
+                    display: true,
+                    text: 'Users'
+                }
+            },
+            revenue: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                title: {
+                    display: true,
+                    text: 'Revenue ($)'
+                },
+                grid: {
+                    drawOnChartArea: false,
+                },
+            }
+        }
+    }
+});
+
+// Export functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const exportBtn = document.querySelector('.btn-export');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function() {
+            // Simple CSV export
+            const data = chartData;
+            let csv = 'Month,Users,Revenue\n';
+            data.forEach(row => {
+                csv += `${row.month},${row.users},${row.revenue}\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'dashboard-data.csv';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        });
+    }
+});
+
+// Simulate streaming updates (if Rust streaming is enabled)
+{% if streaming_enabled %}
+let updateCounter = 0;
+setInterval(() => {
+    updateCounter++;
+    const indicators = document.querySelectorAll('.streaming-enabled');
+    indicators.forEach(indicator => {
+        indicator.style.opacity = Math.sin(updateCounter * 0.5) * 0.3 + 0.7;
+    });
+}, 100);
+
+console.log('🦀 Rust streaming template rendering active - Progressive loading enabled');
+{% else %}
+console.log('📄 Standard template rendering - Consider enabling Rust engine for better performance');
+{% endif %}
+</script>
+
+<style>
+.badge {
+    background: #3498db;
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.view-all {
+    color: #3498db;
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+
+.view-all:hover {
+    text-decoration: underline;
+}
+
+.btn-export {
+    background: #27ae60;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.btn-export:hover {
+    background: #219a52;
+}
+</style>
+{% endblock %}

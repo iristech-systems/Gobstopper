@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Profile - {% endblock %}
+
+{% block content %}
+<div class="me-page">
+    <h1>Your Profile</h1>
+    {% if authenticated %}
+        <p>Status: <span class="badge badge-success">Signed in</span></p>
+        <p><strong>User:</strong> {{ user | default(value='demo') }}</p>
+        <div class="session-box">
+            <h3>Session Data</h3>
+            <pre id="sessionJson">{{ session }}</pre>
+        </div>
+        <div class="actions">
+            <button class="btn btn-secondary" onclick="logoutDemo()">Logout</button>
+            <a href="/" class="btn btn-primary">Home</a>
+        </div>
+    {% else %}
+        <p>Status: <span class="badge">Not signed in</span></p>
+        <p><a href="/login" class="btn btn-primary">Go to Login</a></p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.me-page { max-width: 800px; margin: 2rem auto; background: #fff; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+.session-box { margin-top: 1rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; }
+pre { white-space: pre-wrap; word-break: break-word; }
+.actions { margin-top: 1rem; display: flex; gap: 0.5rem; }
+</style>
+<script>
+// nothing extra needed; base.html provides logoutDemo()
+</script>
+{% endblock %}

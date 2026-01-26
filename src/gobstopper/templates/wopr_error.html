@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WOPR :: SYSTEM ERROR :: {{ status_code }}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&family=Roboto+Mono:wght@400;700&display=swap');
+
+        :root {
+            --bg-color: #0d0d0d;
+            --fg-color: #00ff41;
+            --accent-color: #ff4500;
+            --border-color: #333;
+            --header-bg: #1a1a1a;
+            --pre-bg: #111;
+            --link-color: #00ff41;
+            --link-hover: #ff4500;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--fg-color);
+            font-family: 'Roboto Mono', monospace;
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-size: 16px;
+        }
+
+        .container {
+            border: 2px solid var(--border-color);
+            background-color: var(--header-bg);
+            padding: 2rem;
+            max-width: 800px;
+            width: 100%;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+            position: relative;
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -2px; left: -2px; right: -2px; bottom: -2px;
+            background: repeating-linear-gradient(0deg, rgba(255,255,255,0.05), rgba(255,255,255,0.05) 1px, transparent 1px, transparent 2px);
+            z-index: -1;
+            animation: scanline 10s linear infinite;
+        }
+
+        @keyframes scanline {
+            0% { background-position: 0 0; }
+            100% { background-position: 0 100px; }
+        }
+
+        h1 {
+            font-family: 'VT323', monospace;
+            font-size: 3rem;
+            color: var(--accent-color);
+            text-shadow: 0 0 5px var(--accent-color);
+            margin: 0 0 1rem 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 .status-code {
+            color: var(--fg-color);
+        }
+
+        h2 {
+            font-family: 'VT323', monospace;
+            color: var(--fg-color);
+            font-size: 1.8rem;
+            margin-top: 2rem;
+            border-bottom: 1px dashed var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+
+        p, li {
+            line-height: 1.6;
+        }
+
+        .error-description {
+            background-color: var(--pre-bg);
+            padding: 1rem;
+            border: 1px solid var(--border-color);
+            margin-top: 1rem;
+        }
+
+        .ai-diagnostics {
+            margin-top: 1.5rem;
+        }
+
+        .ai-diagnostics ul {
+            list-style-type: '>> ';
+            padding-left: 1.5rem;
+        }
+
+        .traceback-container {
+            margin-top: 1.5rem;
+        }
+
+        details {
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        summary {
+            font-weight: bold;
+            cursor: pointer;
+            padding: 1rem;
+            background-color: var(--pre-bg);
+            outline: none;
+            font-family: 'VT323', monospace;
+            font-size: 1.5rem;
+        }
+
+        summary:hover {
+            color: var(--accent-color);
+        }
+
+        pre {
+            background-color: #000;
+            color: var(--fg-color);
+            padding: 1rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 0;
+            font-size: 0.9em;
+        }
+
+        .footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            text-align: center;
+            color: #888;
+        }
+
+        .footer a {
+            color: var(--link-color);
+            text-decoration: none;
+        }
+        .footer a:hover {
+            color: var(--link-hover);
+            text-decoration: underline;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            <span>// {{ error_title }}</span>
+            <span class="status-code">[{{ status_code }}]</span>
+        </h1>
+
+        <div class="error-description">
+            <p>{{ error_description }}</p>
+        </div>
+
+        {% if debug %}
+        <div class="debug-info">
+            <h2>&gt; SYSTEM DIAGNOSTICS</h2>
+            <p><strong>Request ID:</strong> {{ request_id }}</p>
+
+            {% if traceback %}
+            <div class="traceback-container">
+                <details>
+                    <summary>Show Traceback</summary>
+                    <pre><code>{{ traceback }}</code></pre>
+                </details>
+            </div>
+            {% endif %}
+
+            <div class="ai-diagnostics">
+                <h2>&gt; AI ASSISTANT ANALYSIS</h2>
+                <ul>
+                    <li><strong>Error Type:</strong> {{ status_code }} {{ error_title }}</li>
+                    <li><strong>Request Path:</strong> <code>{{ request_path }}</code></li>
+                    <li><strong>Analysis:</strong> The system encountered an exception while processing the request. Review the traceback to identify the root cause.</li>
+                    <li><strong>Recommendation:</strong>
+                        {% if status_code == 500 %}
+                            Focus on the last frame of the traceback to find the line of code that raised the exception. Check for logic errors, incorrect variable types, or issues with external services.
+                        {% elif status_code == 404 %}
+                            Verify that a route exists for <code>{{ request.method }} {{ request.path }}</code>. Check for typos in the URL or the route definition in your application code.
+                        {% else %}
+                            Review the application logs associated with request ID <code>{{ request_id }}</code> for more context.
+                        {% endif %}
+                    </li>
+                </ul>
+            </div>
+        </div>
+        {% else %}
+        <div class="production-info">
+             <h2>&gt; SYSTEM STATUS</h2>
+             <p>A system anomaly has been logged. If this issue persists, please contact the system administrator.</p>
+             <p>Reference ID: <strong>{{ request_id }}</strong></p>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>WOPR Framework // Shall we play a game?</p>
+        </div>
+    </div>
+</body>
+</html>

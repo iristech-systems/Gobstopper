@@ -1,0 +1,535 @@
+"""
+{{ project.name }} - Microservices Architecture
+Built with Gobstopper Framework
+
+This application is designed as a microservice with proper
+service discovery, health checks, and distributed system patterns.
+"""
+
+import asyncio
+import json
+from datetime import datetime
+from typing import Optional, Dict, Any
+from gobstopper import Gobstopper
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.utils.rate_limiter import RateLimiter
+
+# Import service components
+from services.core import CoreService
+from services.discovery import ServiceDiscovery
+from services.health import HealthChecker
+from services.metrics import MetricsCollector
+from services.auth import AuthService
+from services.communication import ServiceCommunicator
+{% if usecase.name == 'data-science' %}from services.ml import MLService{% endif %}
+{% if usecase.name == 'real-time-dashboard' %}from services.dashboard import DashboardService{% endif %}
+{% if usecase.name == 'content-management' %}from services.content import ContentService{% endif %}
+
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize service components
+core_service = CoreService()
+service_discovery = ServiceDiscovery()
+health_checker = HealthChecker()
+metrics_collector = MetricsCollector()
+auth_service = AuthService()
+service_communicator = ServiceCommunicator()
+
+{% if usecase.name == 'data-science' %}ml_service = MLService(){% endif %}
+{% if usecase.name == 'real-time-dashboard' %}dashboard_service = DashboardService(){% endif %}
+{% if usecase.name == 'content-management' %}content_service = ContentService(){% endif %}
+
+# Rate limiter for API endpoints
+rate_limiter = RateLimiter(
+    max_requests=settings.RATE_LIMIT_REQUESTS,
+    window_seconds=settings.RATE_LIMIT_WINDOW
+)
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(
+    secret_key=settings.SECRET_KEY,
+    csrf_protection=True
+), priority=100)
+
+app.add_middleware(CORSMiddleware(
+    origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"]
+), priority=95)
+
+# Service information
+SERVICE_INFO = {
+    "name": "{{ project.name }}",
+    "version": settings.SERVICE_VERSION,
+    "description": "{{ usecase.description }}",
+    "type": "{{ usecase.name }}",
+    "environment": settings.ENVIRONMENT,
+    "capabilities": {{ usecase.endpoints | tojson }}
+}
+
+# Context processors
+@app.context_processor
+def inject_service_info():
+    return {
+        "service_name": SERVICE_INFO["name"],
+        "service_version": SERVICE_INFO["version"],
+        "environment": settings.ENVIRONMENT,
+        "service_id": core_service.service_id
+    }
+
+# Health and discovery endpoints
+@app.get("/health")
+async def health_check(request):
+    """Comprehensive health check for service mesh"""
+    health_status = await health_checker.get_full_health_status()
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    
+    return health_status, status_code
+
+@app.get("/health/ready")
+async def readiness_check(request):
+    """Kubernetes readiness probe"""
+    is_ready = await health_checker.is_ready()
+    
+    if is_ready:
+        return {"status": "ready", "timestamp": datetime.utcnow().isoformat()}
+    else:
+        return {"status": "not_ready", "timestamp": datetime.utcnow().isoformat()}, 503
+
+@app.get("/health/live")
+async def liveness_check(request):
+    """Kubernetes liveness probe"""
+    is_alive = await health_checker.is_alive()
+    
+    if is_alive:
+        return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
+    else:
+        return {"status": "dead", "timestamp": datetime.utcnow().isoformat()}, 503
+
+@app.get("/metrics")
+async def prometheus_metrics(request):
+    """Prometheus-compatible metrics endpoint"""
+    metrics_data = await metrics_collector.get_prometheus_metrics()
+    
+    return Response(
+        metrics_data,
+        content_type="text/plain; version=0.0.4; charset=utf-8"
+    )
+
+@app.get("/info")
+async def service_info(request):
+    """Service discovery information"""
+    return {
+        **SERVICE_INFO,
+        "service_id": core_service.service_id,
+        "instance_id": core_service.instance_id,
+        "start_time": core_service.start_time.isoformat(),
+        "uptime_seconds": (datetime.utcnow() - core_service.start_time).total_seconds(),
+        "endpoints": await core_service.get_available_endpoints(),
+        "dependencies": await service_discovery.get_service_dependencies(),
+        "resource_usage": await metrics_collector.get_resource_usage()
+    }
+
+# Authentication and authorization
+@app.post("/auth/service-token")
+async def get_service_token(request):
+    """Get service-to-service authentication token"""
+    
+    # Rate limiting
+    client_id = request.client_host
+    if not await rate_limiter.allow_request(client_id):
+        return {"error": "Rate limit exceeded"}, 429
+    
+    try:
+        data = await request.get_json()
+        service_id = data.get("service_id")
+        service_secret = data.get("service_secret")
+        
+        # Validate service credentials
+        if not await auth_service.validate_service_credentials(service_id, service_secret):
+            return {"error": "Invalid service credentials"}, 401
+        
+        # Generate service token
+        token = await auth_service.create_service_token(service_id)
+        
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "service_id": service_id
+        }
+        
+    except Exception as e:
+        app.logger.error(f"Service token error: {e}")
+        return {"error": "Token generation failed"}, 500
+
+# Core service API
+@app.get("/api/v1/status")
+async def service_status(request):
+    """Get detailed service status"""
+    
+    # Service-to-service authentication
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    status = await core_service.get_detailed_status()
+    await metrics_collector.track_api_request("/api/v1/status", "GET", 200)
+    
+    return status
+
+{% if usecase.name == 'data-science' %}
+# ML Service endpoints
+@app.post("/api/v1/models/predict")
+async def predict(request):
+    """Make prediction using trained model"""
+    
+    # Rate limiting
+    client_id = request.client_host
+    if not await rate_limiter.allow_request(client_id):
+        return {"error": "Rate limit exceeded"}, 429
+    
+    # Service authentication
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    try:
+        data = await request.get_json()
+        
+        result = await ml_service.predict(
+            model_id=data.get("model_id"),
+            features=data.get("features"),
+            request_id=data.get("request_id")
+        )
+        
+        await metrics_collector.track_api_request("/api/v1/models/predict", "POST", 200)
+        return result
+        
+    except ValueError as e:
+        await metrics_collector.track_api_request("/api/v1/models/predict", "POST", 400)
+        return {"error": str(e)}, 400
+    except Exception as e:
+        app.logger.error(f"Prediction error: {e}")
+        await metrics_collector.track_api_request("/api/v1/models/predict", "POST", 500)
+        return {"error": "Prediction failed"}, 500
+
+@app.get("/api/v1/models")
+async def list_models(request):
+    """List available models"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    models = await ml_service.list_models()
+    return {"models": models}
+
+@app.post("/api/v1/models/train")
+async def train_model(request):
+    """Queue model training task"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    try:
+        data = await request.get_json()
+        
+        task_id = await app.add_background_task(
+            "train_model",
+            category="ml",
+            model_type=data.get("model_type"),
+            dataset_id=data.get("dataset_id"),
+            hyperparameters=data.get("hyperparameters", {}),
+            callback_url=data.get("callback_url")
+        )
+        
+        return {"task_id": task_id, "status": "queued"}
+        
+    except Exception as e:
+        app.logger.error(f"Training queue error: {e}")
+        return {"error": "Training failed to queue"}, 500
+
+{% elif usecase.name == 'real-time-dashboard' %}
+# Dashboard Service endpoints
+@app.get("/api/v1/metrics")
+async def get_metrics(request):
+    """Get dashboard metrics"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    time_range = request.args.get("range", ["1h"])[0]
+    metric_types = request.args.get("types", ["all"])
+    
+    metrics = await dashboard_service.get_metrics(time_range, metric_types)
+    return metrics
+
+@app.post("/api/v1/metrics/push")
+async def push_metrics(request):
+    """Accept metrics from other services"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    try:
+        data = await request.get_json()
+        
+        await dashboard_service.store_metrics(
+            service_id=data.get("service_id"),
+            metrics=data.get("metrics"),
+            timestamp=data.get("timestamp")
+        )
+        
+        return {"status": "accepted"}
+        
+    except Exception as e:
+        app.logger.error(f"Metrics push error: {e}")
+        return {"error": "Failed to store metrics"}, 500
+
+{% elif usecase.name == 'content-management' %}
+# Content Service endpoints
+@app.get("/api/v1/content")
+async def list_content(request):
+    """List content items"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    content_type = request.args.get("type", [None])[0]
+    page = int(request.args.get("page", [1])[0])
+    
+    content = await content_service.list_content(content_type, page)
+    return content
+
+@app.get("/api/v1/content/<content_id>")
+async def get_content(request, content_id: str):
+    """Get specific content item"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    content = await content_service.get_content(content_id)
+    if not content:
+        return {"error": "Content not found"}, 404
+    
+    return content
+
+@app.post("/api/v1/content")
+async def create_content(request):
+    """Create new content item"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    try:
+        data = await request.get_json()
+        
+        content = await content_service.create_content(data)
+        
+        # Queue indexing task
+        await app.add_background_task(
+            "index_content",
+            category="search",
+            content_id=content.id
+        )
+        
+        return content.to_dict(), 201
+        
+    except ValueError as e:
+        return {"error": str(e)}, 400
+    except Exception as e:
+        app.logger.error(f"Content creation error: {e}")
+        return {"error": "Content creation failed"}, 500
+
+{% endif %}
+
+# Service-to-service communication
+@app.post("/api/v1/communicate/<target_service>")
+async def communicate_with_service(request, target_service: str):
+    """Proxy communication to another service"""
+    
+    if not await auth_service.verify_service_request(request):
+        return {"error": "Service authentication required"}, 401
+    
+    try:
+        data = await request.get_json()
+        
+        result = await service_communicator.call_service(
+            service_name=target_service,
+            endpoint=data.get("endpoint"),
+            method=data.get("method", "GET"),
+            data=data.get("data")
+        )
+        
+        return result
+        
+    except Exception as e:
+        app.logger.error(f"Service communication error: {e}")
+        return {"error": "Service communication failed"}, 500
+
+# Background tasks
+{% if usecase.name == 'data-science' %}
+@app.task("train_model", category="ml")
+async def train_model_task(model_type: str, dataset_id: str, hyperparameters: dict, callback_url: str = None):
+    """Background task for model training"""
+    result = await ml_service.train_model_async(model_type, dataset_id, hyperparameters)
+    
+    # Notify callback URL if provided
+    if callback_url:
+        await service_communicator.notify_callback(callback_url, result)
+    
+    return result
+{% elif usecase.name == 'real-time-dashboard' %}
+@app.task("collect_metrics", category="data")
+async def collect_metrics_task():
+    """Collect metrics from service dependencies"""
+    return await dashboard_service.collect_all_metrics()
+{% elif usecase.name == 'content-management' %}
+@app.task("index_content", category="search")
+async def index_content_task(content_id: str):
+    """Index content for search"""
+    return await content_service.index_content(content_id)
+
+@app.task("sync_content", category="sync")
+async def sync_content_task(content_id: str, target_services: list):
+    """Sync content to other services"""
+    return await content_service.sync_content_to_services(content_id, target_services)
+{% endif %}
+
+@app.task("heartbeat", category="health")
+async def heartbeat_task():
+    """Send heartbeat to service registry"""
+    return await service_discovery.send_heartbeat()
+
+@app.task("service_cleanup", category="maintenance")
+async def service_cleanup_task():
+    """Clean up stale service data"""
+    return await core_service.cleanup_stale_data()
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize microservice on startup"""
+    
+    # Initialize core service
+    await core_service.initialize()
+    
+    # Register with service discovery
+    await service_discovery.register_service(SERVICE_INFO)
+    
+    # Initialize health checker
+    await health_checker.initialize()
+    
+    # Initialize metrics collector
+    await metrics_collector.initialize()
+    
+    # Initialize auth service
+    await auth_service.initialize()
+    
+    # Initialize service communicator
+    await service_communicator.initialize()
+    
+    {% if usecase.name == 'data-science' %}
+    # Initialize ML service
+    await ml_service.initialize()
+    {% elif usecase.name == 'real-time-dashboard' %}
+    # Initialize dashboard service
+    await dashboard_service.initialize()
+    {% elif usecase.name == 'content-management' %}
+    # Initialize content service
+    await content_service.initialize()
+    {% endif %}
+    
+    # Start background workers
+    await app.start_task_workers("health", worker_count=1)
+    await app.start_task_workers("maintenance", worker_count=1)
+    {% if usecase.name == 'data-science' %}
+    await app.start_task_workers("ml", worker_count=3)
+    {% elif usecase.name == 'real-time-dashboard' %}
+    await app.start_task_workers("data", worker_count=2)
+    {% elif usecase.name == 'content-management' %}
+    await app.start_task_workers("search", worker_count=1)
+    await app.start_task_workers("sync", worker_count=2)
+    {% endif %}
+    
+    # Schedule periodic tasks
+    asyncio.create_task(schedule_periodic_tasks())
+    
+    app.logger.info(f"🚀 {SERVICE_INFO['name']} microservice started")
+    app.logger.info(f"Service ID: {core_service.service_id}")
+    app.logger.info(f"Instance ID: {core_service.instance_id}")
+
+async def schedule_periodic_tasks():
+    """Schedule periodic maintenance tasks"""
+    while True:
+        # Send heartbeat every 30 seconds
+        if datetime.now().second % 30 == 0:
+            await app.add_background_task(
+                "heartbeat",
+                category="health"
+            )
+        
+        {% if usecase.name == 'real-time-dashboard' %}
+        # Collect metrics every minute
+        if datetime.now().second == 0:
+            await app.add_background_task(
+                "collect_metrics",
+                category="data"
+            )
+        {% endif %}
+        
+        # Cleanup every hour
+        if datetime.now().minute == 0 and datetime.now().second == 0:
+            await app.add_background_task(
+                "service_cleanup",
+                category="maintenance"
+            )
+        
+        await asyncio.sleep(1)  # Check every second for precise timing
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    
+    # Deregister from service discovery
+    await service_discovery.deregister_service()
+    
+    {% if usecase.name == 'data-science' %}
+    # Cleanup ML service
+    await ml_service.cleanup()
+    {% elif usecase.name == 'real-time-dashboard' %}
+    # Cleanup dashboard service
+    await dashboard_service.cleanup()
+    {% elif usecase.name == 'content-management' %}
+    # Cleanup content service
+    await content_service.cleanup()
+    {% endif %}
+    
+    # Cleanup service components
+    await service_communicator.cleanup()
+    await auth_service.cleanup()
+    await metrics_collector.cleanup()
+    await health_checker.cleanup()
+    await core_service.cleanup()
+    
+    # Shutdown task queue
+    await app.task_queue.shutdown()
+    
+    app.logger.info(f"👋 {SERVICE_INFO['name']} microservice shutting down")
+
+if __name__ == "__main__":
+    from gobstopper.http.response import Response
+    
+    print("=" * 70)
+    print("{{ project.name }} - Microservices Architecture")
+    print("=" * 70)
+    print("Architecture: Distributed microservice with service mesh integration")
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Health Check: http://localhost:8000/health")
+    print(f"Metrics: http://localhost:8000/metrics")
+    print(f"Service Info: http://localhost:8000/info")
+    print(f"API: http://localhost:8000/api/v1")

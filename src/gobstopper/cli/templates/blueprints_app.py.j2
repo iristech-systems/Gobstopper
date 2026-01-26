@@ -1,0 +1,165 @@
+"""
+{{ project.name }} - Blueprints Architecture
+Built with Gobstopper Framework
+
+This application demonstrates a blueprints-based architecture
+where functionality is organized into reusable modules.
+"""
+
+import asyncio
+from gobstopper import Gobstopper
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+
+# Import blueprints
+from blueprints.auth import auth_bp
+from blueprints.api import api_bp
+from blueprints.admin import admin_bp
+from blueprints.public import public_bp
+{% if 'websockets' in project.features %}from blueprints.websockets import ws_bp{% endif %}
+
+from config import settings
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize templates
+app.init_templates("templates", use_rust=True)
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(
+    secret_key=settings.SECRET_KEY,
+    csrf_protection=True
+), priority=100)
+
+app.add_middleware(CORSMiddleware(
+    origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True
+), priority=95)
+
+app.add_middleware(RustStaticMiddleware(
+    directory="static",
+    url_prefix="/static"
+), priority=90)
+
+# Context processors
+@app.context_processor
+def inject_globals():
+    return {
+        "app_name": "{{ project.name }}",
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT
+    }
+
+# Register blueprints
+def register_blueprints():
+    """Register all application blueprints"""
+    
+    # Public routes (no prefix)
+    app.register_blueprint(public_bp)
+    
+    # Authentication routes
+    app.register_blueprint(auth_bp, url_prefix="/auth")
+    
+    # API routes
+    app.register_blueprint(api_bp, url_prefix="/api/v1")
+    
+    # Admin routes
+    app.register_blueprint(admin_bp, url_prefix="/admin")
+    
+    {% if 'websockets' in project.features %}
+    # WebSocket routes
+    app.register_blueprint(ws_bp, url_prefix="/ws")
+    {% endif %}
+
+# Background tasks
+{% if usecase.name == 'data-science' %}
+@app.task("train_model", category="ml")
+async def train_model_task(model_type: str, dataset_id: str, hyperparameters: dict):
+    """Background task for model training"""
+    from tasks.ml_tasks import train_model
+    return await train_model(model_type, dataset_id, hyperparameters)
+{% elif usecase.name == 'real-time-dashboard' %}
+@app.task("collect_metrics", category="data")
+async def collect_metrics_task():
+    """Collect metrics from various sources"""
+    from tasks.data_tasks import collect_all_metrics
+    return await collect_all_metrics()
+{% elif usecase.name == 'content-management' %}
+@app.task("index_content", category="search")
+async def index_content_task(content_id: str):
+    """Index content for search"""
+    from tasks.content_tasks import index_content
+    return await index_content(content_id)
+{% else %}
+@app.task("process_data", category="default")
+async def process_data_task(data: dict):
+    """Generic data processing task"""
+    from tasks.generic_tasks import process_data
+    return await process_data(data)
+{% endif %}
+
+# Error handlers
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    """Handle 404 errors"""
+    return await app.render_template("errors/404.html"), 404
+
+@app.exception_handler(500)
+async def server_error_handler(request, exc):
+    """Handle 500 errors"""
+    app.logger.error(f"Server error: {exc}")
+    return await app.render_template("errors/500.html"), 500
+
+# Startup tasks
+@app.on_startup
+async def startup():
+    """Initialize application on startup"""
+    # Register all blueprints
+    register_blueprints()
+    
+    # Initialize database connections
+    from core.database import initialize_db
+    await initialize_db()
+    
+    {% if 'websockets' in project.features %}
+    # Initialize WebSocket manager
+    from core.websockets import initialize_ws_manager
+    initialize_ws_manager()
+    {% endif %}
+    
+    # Start background workers
+    await app.start_task_workers("default", worker_count=2)
+    {% if usecase.name == 'data-science' %}
+    await app.start_task_workers("ml", worker_count=3)
+    {% elif usecase.name == 'real-time-dashboard' %}
+    await app.start_task_workers("data", worker_count=2)
+    {% elif usecase.name == 'content-management' %}
+    await app.start_task_workers("search", worker_count=1)
+    {% endif %}
+    
+    app.logger.info(f"🚀 {{ project.name }} started (Blueprints Architecture)")
+    app.logger.info(f"Registered blueprints: {len(app.blueprints)}")
+
+# Shutdown tasks
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    from core.database import close_db
+    await close_db()
+    
+    await app.task_queue.shutdown()
+    app.logger.info("👋 {{ project.name }} shutting down")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("{{ project.name }} - Blueprints Architecture")
+    print("=" * 60)
+    print("Architecture: Modular blueprints for organized code")
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Application: http://localhost:8000")
+    {% if usecase.name == 'content-management' %}
+    print(f"Admin Panel: http://localhost:8000/admin")
+    {% endif %}
+    print(f"API: http://localhost:8000/api/v1")

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Login - {% endblock %}
+
+{% block content %}
+<div class="auth-page">
+    <h1>Login</h1>
+    <p>This is a demo login that creates a session with the username you provide.</p>
+
+    <form id="loginForm" onsubmit="submitLogin(event)">
+        <div class="form-group">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" placeholder="demo" value="demo" required>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Login</button>
+            <a href="/" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+
+    <div id="loginMessage" class="message" style="margin-top:1rem;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.auth-page { max-width: 480px; margin: 2rem auto; background: #fff; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+.form-group { margin-bottom: 1rem; }
+.form-group label { display: block; margin-bottom: 0.5rem; color: #34495e; }
+.form-group input { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid #ddd; border-radius: 4px; font-size: 1rem; }
+.form-actions { display: flex; gap: 0.5rem; }
+.message { color: #2c3e50; }
+</style>
+<script>
+function getMetaCsrf() {
+    const el = document.querySelector('meta[name="csrf-token"]');
+    return el ? el.content : '';
+}
+async function submitLogin(ev) {
+    ev.preventDefault();
+    const msg = document.getElementById('loginMessage');
+    const username = document.getElementById('username').value || 'demo';
+    msg.textContent = 'Signing in...';
+    try {
+        const resp = await fetch('/login-demo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getMetaCsrf() },
+            body: JSON.stringify({ user: username })
+        });
+        // Reload to ensure fresh CSRF bound to session, then go to /me
+        window.location.href = '/me';
+    } catch (e) {
+        msg.textContent = 'Login failed: ' + e.message;
+    }
+}
+</script>
+{% endblock %}

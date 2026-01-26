@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chart Gallery - Tempest Charts</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f3f4f6;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        header {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+        h1 {
+            color: #111827;
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        .breadcrumb {
+            color: #6b7280;
+            font-size: 0.9rem;
+        }
+        .breadcrumb a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 1.5rem;
+        }
+        .chart-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+        .chart-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎨 Chart Gallery</h1>
+            <div class="breadcrumb">
+                <a href="/">Home</a> / Chart Gallery
+                <p style="margin-top: 0.5rem; color: #6b7280;">Explore all available chart types</p>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="chart-card">
+                <div class="chart-title">Line Chart</div>
+                {{ line_chart | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Bar Chart</div>
+                {{ bar_chart | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Stacked Bar Chart</div>
+                {{ stacked_bar | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Pie Chart</div>
+                {{ pie_chart | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Donut Chart</div>
+                {{ donut_chart | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Scatter Plot</div>
+                {{ scatter_chart | safe }}
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">Candlestick Chart</div>
+                {{ candlestick_chart | safe }}
+            </div>
+        </div>
+    </div>
+</body>
+</html>

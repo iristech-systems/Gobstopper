@@ -1,0 +1,185 @@
+"""
+Machine Learning Models Module
+"""
+
+import json
+import pickle
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from datetime import datetime
+import numpy as np
+
+# Model storage directory
+MODELS_DIR = Path("models/saved")
+MODELS_DIR.mkdir(exist_ok=True)
+
+# In-memory model cache
+_loaded_models: Dict[str, Any] = {}
+
+
+class MLModel:
+    """Base class for ML models"""
+    
+    def __init__(self, model_id: str, model_type: str, metadata: dict):
+        self.model_id = model_id
+        self.model_type = model_type
+        self.metadata = metadata
+        self.created_at = datetime.utcnow()
+        self.model = None
+        
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        """Make predictions"""
+        if self.model is None:
+            raise ValueError("Model not loaded")
+        return self.model.predict(features)
+        
+    def to_dict(self) -> dict:
+        """Convert to dictionary"""
+        return {
+            "model_id": self.model_id,
+            "model_type": self.model_type,
+            "metadata": self.metadata,
+            "created_at": self.created_at.isoformat()
+        }
+        
+    def save(self):
+        """Save model to disk"""
+        model_path = MODELS_DIR / f"{self.model_id}.pkl"
+        metadata_path = MODELS_DIR / f"{self.model_id}.json"
+        
+        # Save model
+        with open(model_path, "wb") as f:
+            pickle.dump(self.model, f)
+            
+        # Save metadata
+        with open(metadata_path, "w") as f:
+            json.dump(self.to_dict(), f)
+            
+    @classmethod
+    def load(cls, model_id: str) -> Optional["MLModel"]:
+        """Load model from disk"""
+        model_path = MODELS_DIR / f"{model_id}.pkl"
+        metadata_path = MODELS_DIR / f"{model_id}.json"
+        
+        if not model_path.exists() or not metadata_path.exists():
+            return None
+            
+        # Load metadata
+        with open(metadata_path, "r") as f:
+            data = json.load(f)
+            
+        # Create model instance
+        model = cls(
+            model_id=data["model_id"],
+            model_type=data["model_type"],
+            metadata=data["metadata"]
+        )
+        
+        # Load model
+        with open(model_path, "rb") as f:
+            model.model = pickle.load(f)
+            
+        return model
+
+
+async def load_pretrained_models():
+    """Load pre-trained models on startup"""
+    global _loaded_models
+    
+    # Load all saved models
+    for model_file in MODELS_DIR.glob("*.json"):
+        model_id = model_file.stem
+        model = MLModel.load(model_id)
+        if model:
+            _loaded_models[model_id] = model
+            
+    print(f"Loaded {len(_loaded_models)} pre-trained models")
+
+
+def get_loaded_models() -> List[str]:
+    """Get list of loaded model IDs"""
+    return list(_loaded_models.keys())
+
+
+async def get_model(model_id: str) -> Optional[MLModel]:
+    """Get a specific model"""
+    if model_id in _loaded_models:
+        return _loaded_models[model_id]
+        
+    # Try loading from disk
+    model = MLModel.load(model_id)
+    if model:
+        _loaded_models[model_id] = model
+        
+    return model
+
+
+async def list_models() -> List[dict]:
+    """List all available models"""
+    models = []
+    
+    # List loaded models
+    for model_id, model in _loaded_models.items():
+        models.append(model.to_dict())
+        
+    # List saved models not yet loaded
+    for model_file in MODELS_DIR.glob("*.json"):
+        model_id = model_file.stem
+        if model_id not in _loaded_models:
+            with open(model_file, "r") as f:
+                data = json.load(f)
+                models.append(data)
+                
+    return models
+
+
+async def delete_model(model_id: str) -> bool:
+    """Delete a model"""
+    # Remove from cache
+    if model_id in _loaded_models:
+        del _loaded_models[model_id]
+        
+    # Delete files
+    model_path = MODELS_DIR / f"{model_id}.pkl"
+    metadata_path = MODELS_DIR / f"{model_id}.json"
+    
+    if model_path.exists():
+        model_path.unlink()
+        
+    if metadata_path.exists():
+        metadata_path.unlink()
+        return True
+        
+    return False
+
+
+def create_model(model_type: str, model_params: dict) -> MLModel:
+    """Create a new model instance"""
+    import uuid
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.svm import SVC
+    
+    model_id = str(uuid.uuid4())
+    
+    # Create model based on type
+    if model_type == "random_forest":
+        model = RandomForestClassifier(**model_params)
+    elif model_type == "gradient_boosting":
+        model = GradientBoostingClassifier(**model_params)
+    elif model_type == "logistic_regression":
+        model = LogisticRegression(**model_params)
+    elif model_type == "svm":
+        model = SVC(**model_params)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+        
+    # Create MLModel instance
+    ml_model = MLModel(
+        model_id=model_id,
+        model_type=model_type,
+        metadata={"parameters": model_params}
+    )
+    ml_model.model = model
+    
+    return ml_model

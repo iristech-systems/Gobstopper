@@ -1,0 +1,708 @@
+"""
+{{ project.name }} - Single File Application
+Built with Gobstopper Framework
+
+This is a complete application contained in a single file,
+perfect for simple applications, prototypes, and quick demos.
+"""
+
+import asyncio
+import json
+import uuid
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from gobstopper import Gobstopper
+from gobstopper.middleware.cors import CORSMiddleware
+from gobstopper.middleware.security import SecurityMiddleware
+from gobstopper.middleware.rust_static import RustStaticMiddleware
+{% if 'websockets' in project.features %}from gobstopper.websocket.manager import WebSocketManager{% endif %}
+from gobstopper.tasks.queue import TaskPriority
+from gobstopper.http.response import JSONResponse, Response, StreamResponse
+from gobstopper.utils.rate_limiter import RateLimiter
+
+# Simple configuration
+class Config:
+    SECRET_KEY = "{{ project.name.lower().replace(' ', '-').replace('_', '-') }}-secret-key-change-in-production"
+    DEBUG = True
+    DATABASE_URL = "sqlite:///{{ project.python_module }}.db"
+    ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:8080"]
+    RATE_LIMIT_REQUESTS = 100
+    RATE_LIMIT_WINDOW = 60
+
+config = Config()
+
+# Initialize Gobstopper application
+app = Gobstopper(__name__)
+
+# Initialize components
+{% if 'websockets' in project.features %}ws_manager = WebSocketManager(){% endif %}
+rate_limiter = RateLimiter(
+    max_requests=config.RATE_LIMIT_REQUESTS,
+    window_seconds=config.RATE_LIMIT_WINDOW
+)
+
+# Simple in-memory storage (replace with database in production)
+{% if usecase.name == 'data-science' %}
+models_store = {}
+datasets_store = {}
+training_jobs = {}
+{% elif usecase.name == 'real-time-dashboard' %}
+metrics_store = {}
+dashboard_data = {}
+{% elif usecase.name == 'content-management' %}
+content_store = {}
+users_store = {}
+sessions_store = {}
+{% else %}
+data_store = {}
+{% endif %}
+
+# Initialize templates (inline templates for single file)
+app.init_templates(template_string=True)
+
+# Configure middleware
+app.add_middleware(SecurityMiddleware(
+    secret_key=config.SECRET_KEY,
+    csrf_protection=True
+), priority=100)
+
+app.add_middleware(CORSMiddleware(
+    origins=config.ALLOWED_ORIGINS,
+    allow_credentials=True
+), priority=95)
+
+app.add_middleware(RustStaticMiddleware(
+    directory="static",
+    url_prefix="/static"
+), priority=90)
+
+# Context processors
+@app.context_processor
+def inject_globals():
+    return {
+        "app_name": "{{ project.name }}",
+        "debug": config.DEBUG,
+        "current_year": datetime.now().year
+    }
+
+# Utility functions
+def generate_id() -> str:
+    """Generate unique ID"""
+    return str(uuid.uuid4())
+
+{% if usecase.name == 'data-science' or usecase.name == 'content-management' %}
+def hash_password(password: str) -> str:
+    """Simple password hashing (use proper hashing in production)"""
+    import hashlib
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against hash"""
+    return hash_password(password) == hashed
+{% endif %}
+
+# Simple data models
+{% if usecase.name == 'data-science' %}
+class MLModel:
+    def __init__(self, model_id: str, model_type: str, name: str, status: str = "untrained"):
+        self.id = model_id
+        self.type = model_type
+        self.name = name
+        self.status = status
+        self.created_at = datetime.utcnow()
+        self.accuracy = None
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "type": self.type,
+            "name": self.name,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "accuracy": self.accuracy
+        }
+
+class Dataset:
+    def __init__(self, dataset_id: str, name: str, size: int):
+        self.id = dataset_id
+        self.name = name
+        self.size = size
+        self.created_at = datetime.utcnow()
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "size": self.size,
+            "created_at": self.created_at.isoformat()
+        }
+
+{% elif usecase.name == 'content-management' %}
+class User:
+    def __init__(self, user_id: str, email: str, name: str, password_hash: str):
+        self.id = user_id
+        self.email = email
+        self.name = name
+        self.password_hash = password_hash
+        self.created_at = datetime.utcnow()
+        self.is_active = True
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "email": self.email,
+            "name": self.name,
+            "created_at": self.created_at.isoformat(),
+            "is_active": self.is_active
+        }
+
+class Content:
+    def __init__(self, content_id: str, title: str, body: str, author_id: str, content_type: str = "post"):
+        self.id = content_id
+        self.title = title
+        self.body = body
+        self.author_id = author_id
+        self.content_type = content_type
+        self.created_at = datetime.utcnow()
+        self.status = "draft"
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "body": self.body,
+            "author_id": self.author_id,
+            "content_type": self.content_type,
+            "created_at": self.created_at.isoformat(),
+            "status": self.status
+        }
+{% endif %}
+
+# Background tasks
+{% if usecase.name == 'data-science' %}
+@app.task("train_model", category="ml")
+async def train_model_task(model_id: str, dataset_id: str):
+    """Simulate model training"""
+    await asyncio.sleep(5)  # Simulate training time
+    
+    if model_id in models_store:
+        models_store[model_id].status = "trained"
+        models_store[model_id].accuracy = 0.85  # Mock accuracy
+    
+    return {"model_id": model_id, "status": "completed", "accuracy": 0.85}
+
+{% elif usecase.name == 'real-time-dashboard' %}
+@app.task("collect_metrics", category="data")
+async def collect_metrics_task():
+    """Collect system metrics"""
+    import random
+    
+    current_time = datetime.utcnow()
+    metrics_store[current_time.isoformat()] = {
+        "cpu_usage": random.uniform(10, 90),
+        "memory_usage": random.uniform(20, 80),
+        "requests_per_second": random.randint(50, 200),
+        "response_time": random.uniform(50, 500)
+    }
+    
+    return {"collected_at": current_time.isoformat(), "metrics_count": 4}
+
+{% else %}
+@app.task("process_data", category="default")
+async def process_data_task(data: dict):
+    """Generic data processing"""
+    await asyncio.sleep(2)  # Simulate processing
+    
+    result = {
+        "processed_at": datetime.utcnow().isoformat(),
+        "input_data": data,
+        "result": "processed successfully"
+    }
+    
+    return result
+{% endif %}
+
+# Routes
+@app.get("/")
+async def homepage(request):
+    """Homepage"""
+    template = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ app_name }}</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 2rem; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .header { text-align: center; margin-bottom: 2rem; }
+            .feature { margin: 1rem 0; padding: 1rem; background: #f5f5f5; border-radius: 8px; }
+            .api-list { list-style: none; padding: 0; }
+            .api-list li { margin: 0.5rem 0; }
+            .method { font-weight: bold; color: #0066cc; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>{{ app_name }}</h1>
+                <p>{{ usecase.description }}</p>
+            </div>
+            
+            <div class="feature">
+                <h2>🚀 Features</h2>
+                {% for feature in project.features %}
+                <li>{{ feature.replace('_', ' ').title() }}</li>
+                {% endfor %}
+            </div>
+            
+            <div class="feature">
+                <h2>📡 API Endpoints</h2>
+                <ul class="api-list">
+                    <li><span class="method">GET</span> /api/health - Health check</li>
+                    {% for endpoint in usecase.endpoints[:5] %}
+                    <li><span class="method">{{ endpoint.split(' ')[0] }}</span> {{ endpoint.split(' ', 1)[1] if ' ' in endpoint else endpoint }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            
+            {% if 'websockets' in project.features %}
+            <div class="feature">
+                <h2>🔌 WebSocket Endpoints</h2>
+                <ul class="api-list">
+                    <li><span class="method">WS</span> /ws/updates - Real-time updates</li>
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+    </body>
+    </html>
+    """
+    
+    return await app.render_template_string(template, 
+        usecase={
+            "name": "{{ usecase.name }}",
+            "description": "{{ usecase.description }}",
+            "endpoints": {{ usecase.endpoints | tojson }}
+        },
+        project={
+            "name": "{{ project.name }}",
+            "features": {{ project.features | tojson }}
+        }
+    )
+
+# Health check
+@app.get("/api/health")
+async def health_check(request):
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "{{ project.name }}",
+        "timestamp": datetime.utcnow().isoformat(),
+        {% if usecase.name == 'data-science' %}
+        "models": len(models_store),
+        "datasets": len(datasets_store)
+        {% elif usecase.name == 'content-management' %}
+        "users": len(users_store),
+        "content": len(content_store)
+        {% elif usecase.name == 'real-time-dashboard' %}
+        "metrics_points": len(metrics_store)
+        {% else %}
+        "data_items": len(data_store)
+        {% endif %}
+    }
+
+{% if usecase.name == 'data-science' %}
+# ML API endpoints
+@app.get("/api/models")
+async def list_models(request):
+    """List all models"""
+    models = [model.to_dict() for model in models_store.values()]
+    return {"models": models}
+
+@app.post("/api/models")
+async def create_model(request):
+    """Create new model"""
+    data = await request.get_json()
+    
+    model_id = generate_id()
+    model = MLModel(
+        model_id=model_id,
+        model_type=data.get("type", "linear"),
+        name=data.get("name", f"Model {model_id[:8]}")
+    )
+    
+    models_store[model_id] = model
+    return model.to_dict(), 201
+
+@app.post("/api/models/<model_id>/train")
+async def train_model(request, model_id: str):
+    """Train a model"""
+    if model_id not in models_store:
+        return {"error": "Model not found"}, 404
+    
+    data = await request.get_json()
+    dataset_id = data.get("dataset_id")
+    
+    # Queue training task
+    task_id = await app.add_background_task(
+        "train_model",
+        category="ml",
+        model_id=model_id,
+        dataset_id=dataset_id
+    )
+    
+    return {"task_id": task_id, "status": "training started"}
+
+@app.post("/api/models/<model_id>/predict")
+async def predict(request, model_id: str):
+    """Make prediction"""
+    if model_id not in models_store:
+        return {"error": "Model not found"}, 404
+    
+    model = models_store[model_id]
+    if model.status != "trained":
+        return {"error": "Model not trained"}, 400
+    
+    data = await request.get_json()
+    features = data.get("features", [])
+    
+    # Mock prediction
+    import random
+    prediction = random.random()
+    
+    return {
+        "model_id": model_id,
+        "prediction": prediction,
+        "confidence": 0.85,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.post("/api/datasets")
+async def upload_dataset(request):
+    """Upload dataset"""
+    form = await request.get_form()
+    file_data = form.get("file")
+    
+    if not file_data:
+        return {"error": "No file uploaded"}, 400
+    
+    dataset_id = generate_id()
+    dataset = Dataset(
+        dataset_id=dataset_id,
+        name=file_data.filename,
+        size=len(file_data.content) if hasattr(file_data, 'content') else 0
+    )
+    
+    datasets_store[dataset_id] = dataset
+    return dataset.to_dict(), 201
+
+{% elif usecase.name == 'content-management' %}
+# Content management endpoints
+@app.post("/api/auth/register")
+async def register(request):
+    """User registration"""
+    data = await request.get_json()
+    
+    email = data.get("email", "").lower()
+    name = data.get("name", "")
+    password = data.get("password", "")
+    
+    if not all([email, name, password]):
+        return {"error": "All fields required"}, 400
+    
+    # Check if user exists
+    for user in users_store.values():
+        if user.email == email:
+            return {"error": "Email already registered"}, 409
+    
+    user_id = generate_id()
+    user = User(user_id, email, name, hash_password(password))
+    users_store[user_id] = user
+    
+    return user.to_dict(), 201
+
+@app.post("/api/auth/login")
+async def login(request):
+    """User login"""
+    data = await request.get_json()
+    
+    email = data.get("email", "").lower()
+    password = data.get("password", "")
+    
+    # Find user
+    user = None
+    for u in users_store.values():
+        if u.email == email:
+            user = u
+            break
+    
+    if not user or not verify_password(password, user.password_hash):
+        return {"error": "Invalid credentials"}, 401
+    
+    # Create session
+    session_id = generate_id()
+    sessions_store[session_id] = {
+        "user_id": user.id,
+        "created_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow().timestamp() + 3600  # 1 hour
+    }
+    
+    return {"session_id": session_id, "user": user.to_dict()}
+
+@app.get("/api/content")
+async def list_content(request):
+    """List content"""
+    content_list = [content.to_dict() for content in content_store.values()]
+    return {"content": content_list}
+
+@app.post("/api/content")
+async def create_content(request):
+    """Create content"""
+    # Simple auth check (get from header)
+    session_id = request.headers.get("Authorization", "").replace("Bearer ", "")
+    
+    if session_id not in sessions_store:
+        return {"error": "Authentication required"}, 401
+    
+    data = await request.get_json()
+    
+    content_id = generate_id()
+    content = Content(
+        content_id=content_id,
+        title=data.get("title", ""),
+        body=data.get("body", ""),
+        author_id=sessions_store[session_id]["user_id"],
+        content_type=data.get("type", "post")
+    )
+    
+    content_store[content_id] = content
+    return content.to_dict(), 201
+
+{% elif usecase.name == 'real-time-dashboard' %}
+# Dashboard API endpoints
+@app.get("/api/metrics")
+async def get_metrics(request):
+    """Get current metrics"""
+    # Get last 10 metric points
+    recent_metrics = dict(list(metrics_store.items())[-10:])
+    return {"metrics": recent_metrics, "count": len(recent_metrics)}
+
+@app.post("/api/metrics")
+async def push_metrics(request):
+    """Push new metrics"""
+    data = await request.get_json()
+    
+    timestamp = datetime.utcnow().isoformat()
+    metrics_store[timestamp] = data
+    
+    return {"timestamp": timestamp, "status": "recorded"}
+
+{% if 'websockets' in project.features %}
+@app.websocket("/ws/metrics")
+async def metrics_websocket(websocket):
+    """WebSocket for real-time metrics"""
+    await websocket.accept()
+    connection_id = generate_id()
+    
+    ws_manager.add_connection(connection_id, websocket)
+    
+    try:
+        while True:
+            # Send latest metrics every 5 seconds
+            if metrics_store:
+                latest_timestamp = max(metrics_store.keys())
+                latest_metrics = metrics_store[latest_timestamp]
+                
+                await websocket.send_json({
+                    "type": "metrics_update",
+                    "timestamp": latest_timestamp,
+                    "data": latest_metrics
+                })
+            
+            await asyncio.sleep(5)
+            
+    except Exception as e:
+        app.logger.error(f"WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+{% endif %}
+
+{% else %}
+# Generic API endpoints
+@app.get("/api/data")
+async def list_data(request):
+    """List all data"""
+    return {"data": list(data_store.values()), "count": len(data_store)}
+
+@app.post("/api/data")
+async def create_data(request):
+    """Create new data"""
+    data = await request.get_json()
+    
+    data_id = generate_id()
+    data_item = {
+        "id": data_id,
+        "created_at": datetime.utcnow().isoformat(),
+        **data
+    }
+    
+    data_store[data_id] = data_item
+    return data_item, 201
+
+@app.get("/api/data/<data_id>")
+async def get_data(request, data_id: str):
+    """Get specific data"""
+    if data_id not in data_store:
+        return {"error": "Data not found"}, 404
+    
+    return data_store[data_id]
+
+@app.delete("/api/data/<data_id>")
+async def delete_data(request, data_id: str):
+    """Delete data"""
+    if data_id not in data_store:
+        return {"error": "Data not found"}, 404
+    
+    del data_store[data_id]
+    return {"message": "Data deleted"}
+
+@app.post("/api/process")
+async def process_data(request):
+    """Process data in background"""
+    data = await request.get_json()
+    
+    task_id = await app.add_background_task(
+        "process_data",
+        category="default",
+        data=data
+    )
+    
+    return {"task_id": task_id, "status": "queued"}
+{% endif %}
+
+# Task monitoring
+@app.get("/api/tasks/<task_id>")
+async def get_task_status(request, task_id: str):
+    """Get task status"""
+    task_info = await app.task_queue.get_task_info(task_id)
+    if not task_info:
+        return {"error": "Task not found"}, 404
+    
+    return {
+        "task_id": task_info.id,
+        "status": task_info.status.value,
+        "progress": task_info.progress,
+        "result": task_info.result if task_info.is_completed else None
+    }
+
+{% if 'websockets' in project.features %}
+# WebSocket endpoints
+@app.websocket("/ws/updates")
+async def updates_websocket(websocket):
+    """WebSocket for real-time updates"""
+    await websocket.accept()
+    connection_id = generate_id()
+    
+    ws_manager.add_connection(connection_id, websocket)
+    
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "connection_id": connection_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        # Keep connection alive
+        while True:
+            await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+            await websocket.send_json({
+                "type": "heartbeat",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+    except Exception as e:
+        app.logger.error(f"WebSocket error: {e}")
+    finally:
+        ws_manager.remove_connection(connection_id)
+{% endif %}
+
+# Startup and periodic tasks
+@app.on_startup
+async def startup():
+    """Initialize application"""
+    
+    {% if usecase.name == 'data-science' %}
+    # Create sample model
+    sample_model = MLModel(
+        model_id="sample-model-123",
+        model_type="linear_regression",
+        name="Sample Model"
+    )
+    models_store[sample_model.id] = sample_model
+    
+    # Start ML workers
+    await app.start_task_workers("ml", worker_count=2)
+    
+    {% elif usecase.name == 'content-management' %}
+    # Create admin user
+    admin_id = "admin-user-123"
+    admin_user = User(
+        user_id=admin_id,
+        email="admin@example.com",
+        name="Admin User",
+        password_hash=hash_password("admin123")
+    )
+    users_store[admin_id] = admin_user
+    
+    {% elif usecase.name == 'real-time-dashboard' %}
+    # Start metrics collection
+    await app.start_task_workers("data", worker_count=1)
+    
+    # Schedule regular metrics collection
+    asyncio.create_task(periodic_metrics_collection())
+    
+    {% endif %}
+    
+    # Start default workers
+    await app.start_task_workers("default", worker_count=1)
+    
+    app.logger.info(f"🚀 {{ project.name }} started (Single File Architecture)")
+
+{% if usecase.name == 'real-time-dashboard' %}
+async def periodic_metrics_collection():
+    """Collect metrics periodically"""
+    while True:
+        await app.add_background_task("collect_metrics", category="data")
+        await asyncio.sleep(30)  # Collect every 30 seconds
+{% endif %}
+
+@app.on_shutdown
+async def shutdown():
+    """Cleanup on shutdown"""
+    await app.task_queue.shutdown()
+    app.logger.info("👋 {{ project.name }} shutting down")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("{{ project.name }} - Single File Application")
+    print("=" * 60)
+    print("Architecture: Complete application in a single file")
+    print("Perfect for: Prototypes, demos, simple applications")
+    print()
+    print("Run with: granian --interface rsgi --reload app:app")
+    print(f"Application: http://localhost:8000")
+    print(f"Health Check: http://localhost:8000/api/health")
+    {% if usecase.name == 'data-science' %}
+    print(f"Models API: http://localhost:8000/api/models")
+    {% elif usecase.name == 'content-management' %}
+    print(f"Content API: http://localhost:8000/api/content")
+    {% elif usecase.name == 'real-time-dashboard' %}
+    print(f"Metrics API: http://localhost:8000/api/metrics")
+    {% else %}
+    print(f"Data API: http://localhost:8000/api/data")
+    {% endif %}
+    {% if 'websockets' in project.features %}
+    print(f"WebSocket: ws://localhost:8000/ws/updates")
+    {% endif %}
