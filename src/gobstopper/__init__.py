@@ -78,7 +78,7 @@ from .config import (
 )
 from . import extensions as extensions  # re-export subpackage for convenience
 
-__version__ = "0.2.5"
+__version__ = "0.3.0"
 __author__ = "Gobstopper Framework Team"
 __license__ = "MIT"
 

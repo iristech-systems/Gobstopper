@@ -92,8 +92,23 @@ class Request:
         'scope', 'protocol', '_body', '_json', '_form', '_files',
         '_multipart_parsed', 'session', '_session_id', 'endpoint',
         'view_args', 'url_rule', 'id', '_headers_dict', '_args', '_cookies',
-        'app', 'max_body_bytes', 'max_json_depth'
+        'app', 'max_body_bytes', 'max_json_depth', '_security'
     )
+
+    @property
+    def csrf_token(self) -> str:
+        """Get or generate a CSRF token for the current session.
+        
+        Requires SecurityMiddleware to be installed.
+        """
+        # Retrieve security middleware instance from reserved slot
+        security = getattr(self, "_security", None)
+        if security and self.session is not None:
+            # If token already meant for this session, return it
+            if "csrf_token" in self.session:
+                return self.session["csrf_token"]
+            return security.generate_csrf_token(self.session)
+        return ""
 
     def __init__(self, scope: Scope, protocol: HTTPProtocol):
         self.scope = scope
@@ -486,7 +501,7 @@ class Request:
             Response.set_cookie(): Set cookies in response
             Response.delete_cookie(): Delete cookies
         """
-        if not hasattr(self, '_cookies'):
+        if self._cookies is None:
             cookie_header = self.headers.get('cookie', '')
             self._cookies = {}
             if cookie_header:
@@ -758,6 +773,9 @@ class Request:
             LimitsMiddleware: Configures body size limits
         """
         if self._body is None:
+            # If we want to support both streaming and buffering, we should be careful.
+            # If stream() was already used, we might not be able to get the full body unless we cached it.
+            # For now, we assume protocol() gets the full body.
             body = await self.protocol()
             # Enforce max body size if configured on the instance
             try:
@@ -770,6 +788,33 @@ class Request:
                 pass
             self._body = body
         return self._body
+
+    async def stream(self):
+        """Stream the request body chunks asynchronously.
+        
+        Yields chunks of the request body as they are received. This is useful for
+        handling large uploads without loading the entire file into memory.
+        
+        Yields:
+             bytes: Chunks of request body data.
+             
+        Examples:
+            >>> @app.post("/upload/big")
+            >>> async def upload_big(request: Request):
+            ...     size = 0
+            ...     async for chunk in request.stream():
+            ...         size += len(chunk)
+            ...         # write chunk to file...
+            ...     return {"size": size}
+        """
+        if self._body is not None:
+             # Already buffered, yield the whole thing as one chunk
+             yield self._body
+             return
+
+        # RSGI protocol object is iterable for streaming
+        async for chunk in self.protocol:
+             yield chunk
 
     # Backwards-compat alias expected by app handler
     async def get_body(self) -> bytes:

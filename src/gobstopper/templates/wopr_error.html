@@ -190,7 +190,7 @@
                         {% if status_code == 500 %}
                             Focus on the last frame of the traceback to find the line of code that raised the exception. Check for logic errors, incorrect variable types, or issues with external services.
                         {% elif status_code == 404 %}
-                            Verify that a route exists for <code>{{ request.method }} {{ request.path }}</code>. Check for typos in the URL or the route definition in your application code.
+                            Verify that a route exists for <code>{{ request_method }} {{ request_path }}</code>. Check for typos in the URL or the route definition in your application code.
                         {% else %}
                             Review the application logs associated with request ID <code>{{ request_id }}</code> for more context.
                         {% endif %}

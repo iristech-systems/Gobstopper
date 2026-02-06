@@ -78,6 +78,12 @@ class SecurityMiddleware:
             Default is 'same-origin'. Prevents window.opener access.
         coep_policy: Cross-Origin-Embedder-Policy header value.
             Default is 'require-corp'. Enables SharedArrayBuffer.
+        datastar_enabled: Auto-configure security headers for Datastar compatibility.
+            Default is False. When True, automatically sets:
+            - coep_policy="" (disables COEP)
+            - coop_policy="" (disables COOP)
+            - Adds 'unsafe-eval' to CSP script-src (required for Datastar expressions)
+            - Adds Datastar CDN to CSP script-src and connect-src
         session_storage: Storage backend for sessions. Defaults to FileSessionStorage.
             Can be FileSessionStorage, MemorySessionStorage, or custom implementation.
         debug: Debug mode. Disables some security warnings.
@@ -184,6 +190,7 @@ class SecurityMiddleware:
         referrer_policy: str = "strict-origin-when-cross-origin",
         coop_policy: str = "same-origin",
         coep_policy: str = "require-corp",
+        datastar_enabled: bool = False,
         session_storage: Optional[StorageType] = None,
         debug: bool = False,
         cookie_name: str = "session_id",
@@ -209,6 +216,89 @@ class SecurityMiddleware:
 
         self.enable_csrf = enable_csrf
         self.enable_security_headers = enable_security_headers
+
+        # Auto-configure for Datastar if enabled
+        if datastar_enabled:
+            # Disable COEP and COOP (they block external scripts and fetch)
+            coep_policy = ""
+            coop_policy = ""
+            
+            # Add unsafe-eval to CSP for Datastar expressions
+            if "'unsafe-eval'" not in csp_policy:
+                # Parse CSP and add unsafe-eval to script-src
+                directives = csp_policy.split(';')
+                script_src_found = False
+                new_directives = []
+                
+                for directive in directives:
+                    directive = directive.strip()
+                    if directive.startswith('script-src'):
+                        directive += " 'unsafe-eval'"
+                        script_src_found = True
+                    new_directives.append(directive)
+                
+                # If no script-src directive, add one
+                if not script_src_found:
+                    new_directives.append("script-src 'self' 'unsafe-eval' 'unsafe-inline'")
+                else:
+                    # ensure unsafe-inline is present if script-src exists
+                    final_directives = []
+                    for d in new_directives:
+                        if d.startswith('script-src') and "'unsafe-inline'" not in d:
+                            d += " 'unsafe-inline'"
+                        final_directives.append(d)
+                    new_directives = final_directives
+                
+                csp_policy = '; '.join(new_directives)
+            
+            # Add unsafe-inline to style-src for inline styles
+            if "'unsafe-inline'" not in csp_policy or "style-src" not in csp_policy:
+                directives = csp_policy.split(';')
+                style_src_found = False
+                new_directives = []
+                
+                for directive in directives:
+                    directive = directive.strip()
+                    if directive.startswith('style-src'):
+                        if "'unsafe-inline'" not in directive:
+                            directive += " 'unsafe-inline'"
+                        style_src_found = True
+                    new_directives.append(directive)
+                
+                # If no style-src directive, add one
+                if not style_src_found:
+                    new_directives.append("style-src 'self' 'unsafe-inline'")
+                
+                csp_policy = '; '.join(new_directives)
+            
+            # Add Datastar CDN to script-src and connect-src
+            datastar_cdn = "https://cdn.jsdelivr.net"
+            if datastar_cdn not in csp_policy:
+                directives = csp_policy.split(';')
+                new_directives = []
+                script_src_found = False
+                connect_src_found = False
+                
+                for directive in directives:
+                    directive = directive.strip()
+                    if directive.startswith('script-src'):
+                        directive += f" {datastar_cdn}"
+                        script_src_found = True
+                    elif directive.startswith('connect-src'):
+                        directive += f" {datastar_cdn}"
+                        connect_src_found = True
+                    new_directives.append(directive)
+                
+                if not script_src_found:
+                    new_directives.append(f"script-src 'self' 'unsafe-eval' {datastar_cdn}")
+                if not connect_src_found:
+                    new_directives.append(f"connect-src 'self' {datastar_cdn}")
+                
+                csp_policy = '; '.join(new_directives)
+            
+            if not debug:
+                log.info("Datastar mode enabled: COEP/COOP disabled, CSP configured for Datastar")
+            log.debug(f"Final CSP policy: {csp_policy}")
 
         # Header configurations
         self.hsts_policy = f"max-age={hsts_max_age}"
@@ -353,6 +443,9 @@ class SecurityMiddleware:
         original_session = session_data.copy()
         request.session = session_data
         request._session_id = sid
+
+        # Expose security middleware to request for helpers (like csrf_token)
+        request._security = self
 
         # CSRF protection for state-changing methods
         if self.enable_csrf and request.method in ["POST", "PUT", "DELETE", "PATCH"]:

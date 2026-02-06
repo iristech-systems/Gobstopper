@@ -722,6 +722,39 @@ class TaskQueue:
         
         return dict(stats)
     
+    async def recover_tasks(self, category: str):
+        """Recover pending tasks from storage and re-queue them.
+        
+        Queries the storage for any tasks in PENDING status for the given
+        category and adds them back to the in-memory queue. This ensures
+        tasks that were queued but not processed before a shutdown/restart
+        are not lost.
+        
+        Args:
+            category: The category to recover tasks for.
+        """
+        if not self.enabled:
+            return
+
+        # Get all pending tasks for this category
+        pending_tasks = self.storage.get_tasks(
+            category=category,
+            status=TaskStatus.PENDING,
+            limit=1000  # Reasonable limit for recovery
+        )
+        
+        for task in pending_tasks:
+            # Check if already in queue/running to avoid duplicates
+            # (though normally memory queue is empty on start)
+            if task.id not in self.running_tasks:
+                if category not in self.queues:
+                    self.queues[category] = asyncio.PriorityQueue()
+                
+                # Add to queue
+                await self.queues[category].put(
+                    (-task.priority.value, task.id, task)
+                )
+
     async def start_workers(self, category: str, worker_count: int = 1):
         """Start worker tasks to process tasks in a category queue.
 
@@ -760,6 +793,10 @@ class TaskQueue:
         """
         if not self.enabled:
             return
+        
+        # Recover any pending tasks from storage before starting workers
+        await self.recover_tasks(category)
+
         if category not in self.workers:
             self.workers[category] = []
         

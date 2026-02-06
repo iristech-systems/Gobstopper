@@ -95,22 +95,71 @@ class Response:
     """
     
     def __init__(self,
-                 body: str | bytes = "",
+                 body: Any = "",
                  status: int = 200,
                  headers: dict[str, str] | None = None,
                  content_type: str | None = None):
-        self.body = body
+        """Initialize the response.
+        
+        Args:
+            body: Response content. Can be string, bytes, or object with __html__ method.
+            status: HTTP status code (default: 200)
+            headers: HTTP headers as dict (optional)
+            content_type: MIME type override (auto-detected if not provided)
+        """
+        # Auto-detect htpy/HTML objects
+        if hasattr(body, "__html__"):
+            body = body.__html__()
+            if content_type is None:
+                content_type = "text/html; charset=utf-8"
+
         self.status = status
-        self.headers = headers or {}
+        self._headers_dict = headers or {}
         self._cookies: list[str] = []
         
-        if content_type:
-            self.headers['content-type'] = content_type
-        elif 'content-type' not in self.headers:
-            if isinstance(body, str):
-                self.headers['content-type'] = 'text/html; charset=utf-8'
+        # Handle different body types and content-type detection
+        if isinstance(body, str):
+            self.body = body.encode("utf-8")
+            default_type = "text/html; charset=utf-8"
+        elif isinstance(body, bytes):
+            self.body = body
+            default_type = "application/octet-stream"
+        else:
+            # Fallback for other types - convert to str
+            self.body = str(body).encode("utf-8")
+            default_type = "text/plain; charset=utf-8"
+
+        # Set Content-Type if not provided in headers or argument
+        if not self._get_header("content-type"):
+            if content_type:
+                self._set_header("content-type", content_type)
             else:
-                self.headers['content-type'] = 'application/octet-stream'
+                self._set_header("content-type", default_type)
+
+    def _get_header(self, name: str) -> str | None:
+        """Get a header value case-insensitively."""
+        name_lower = name.lower()
+        for k, v in self._headers_dict.items():
+            if k.lower() == name_lower:
+                return v
+        return None
+
+    def _set_header(self, name: str, value: str):
+        """Set a header value, replacing existing case-insensitively."""
+        name_lower = name.lower()
+        found = False
+        for k in list(self._headers_dict.keys()): # Iterate over a copy to allow modification
+            if k.lower() == name_lower:
+                self._headers_dict[k] = value
+                found = True
+                break
+        if not found:
+            self._headers_dict[name] = value
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return the response headers."""
+        return self._headers_dict
 
     def set_cookie(self, name: str, value: str, *, path: str = "/", domain: str | None = None,
                    max_age: int | None = None, expires: str | None = None,

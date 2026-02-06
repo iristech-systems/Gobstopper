@@ -10,6 +10,7 @@ import subprocess
 import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from .sdk import sdk
 
 try:
     import click
@@ -330,17 +331,22 @@ else:
     @click.option('--reload', '-r', is_flag=True, help='Enable auto-reload')
     @click.option('--threads', '-t', default=None, type=int, help='Number of threads per worker')
     @click.option('--config', '-c', default=None, help='Configuration file name (without extension)')
+    @click.option('--ssl-cert', default=None, help='Path to SSL certificate file')
+    @click.option('--ssl-key', default=None, help='Path to SSL key file')
+    @click.option('--loop', default=None, type=click.Choice(['auto', 'asyncio', 'uvloop']), help='Event loop implementation')
+    @click.option('--log-level', default=None, type=click.Choice(['debug', 'info', 'warning', 'error', 'critical']), help='Log level')
+    @click.option('--access-log/--no-access-log', default=None, help='Enable/disable access log')
+    @click.option('--share', is_flag=True, help='Enable Flash Preview (share via local network/QR)')
     def run(app: str, host: Optional[str], port: Optional[int], workers: Optional[int],
-            reload: bool, threads: Optional[int], config: Optional[str]):
+            reload: bool, threads: Optional[int], config: Optional[str],
+            ssl_cert: Optional[str], ssl_key: Optional[str], loop: Optional[str],
+            log_level: Optional[str], access_log: Optional[bool], share: bool):
         """Run Gobstopper application with Granian server (Flask-like interface)
 
         Example:
             gobstopper run                    # Run app:app on 127.0.0.1:8000
-            gobstopper run myapp:app          # Run custom app
-            gobstopper run -w 4               # Run with 4 workers
-            gobstopper run --reload           # Run with auto-reload
-            gobstopper run --config dev       # Load from dev.json or dev.toml
-            gobstopper run --config production -w 8  # Load config, override workers
+            gobstopper run --reload           # Enable hot reloading
+            gobstopper run --ssl-cert cert.pem --ssl-key key.pem  # Enable HTTPS
         """
         # Load config file if specified
         config_data = {}
@@ -350,10 +356,26 @@ else:
                 click.echo(f"📄 Loaded configuration from: {config}.json/toml")
 
         # Merge config with CLI args (CLI args take precedence)
+        # Server settings
         host = host or config_data.get('host', '127.0.0.1')
         port = port or config_data.get('port', 8000)
         workers = workers or config_data.get('workers', 1)
         threads = threads or config_data.get('threads', 1)
+        loop = loop or config_data.get('loop', 'uvloop')
+        
+        # Logging
+        log_level = log_level or config_data.get('log_level', 'info')
+        if access_log is None:
+            access_log = config_data.get('access_log', True)
+            
+        # SSL
+        ssl_cert = ssl_cert or config_data.get('ssl_cert')
+        ssl_key = ssl_key or config_data.get('ssl_key')
+
+        # FLASH PREVIEW: Force binding if sharing
+        if share and host in ('127.0.0.1', 'localhost'):
+            host = '0.0.0.0'
+
         if not reload:
             reload = config_data.get('reload', False)
 
@@ -382,24 +404,72 @@ else:
             '--port', str(port),
             '--workers', str(workers),
             '--runtime-threads', str(threads),
-            '--log-level', 'error',
+            '--log-level', log_level,
             '--backlog', '16384',
-            '--loop', 'uvloop',
+            '--loop', loop,
             '--respawn-failed-workers',
             '--runtime-mode', runtime_mode,
         ]
 
+        if access_log:
+            cmd.append('--access-log')
+        else:
+            cmd.append('--no-access-log')
+
+        if ssl_cert and ssl_key:
+            cmd.extend(['--ssl-certificate', ssl_cert, '--ssl-keyfile', ssl_key])
+            scheme = "https"
+        else:
+            scheme = "http"
+
         if reload:
             cmd.append('--reload')
+            # SMART WATCHER: Auto-detect extra paths to watch
+            reload_paths = []
+            for path in ['templates', 'static', '.env', 'gobstopper.toml', 'pyproject.toml']:
+                if Path(path).exists():
+                    reload_paths.append(path)
+            
+            # Add any extra paths configured in gobstopper.json/toml
+            extra_watch = config_data.get('reload_paths', [])
+            reload_paths.extend(extra_watch)
+            
+            if reload_paths:
+                # Deduplicate
+                reload_paths = list(set(reload_paths))
+            if reload_paths:
+                # Deduplicate
+                reload_paths = list(set(reload_paths))
+                # Pass to Granian (separate flag for each path)
+                for path in reload_paths:
+                    cmd.append('--reload-paths')
+                    cmd.append(path)
+                click.echo(f"👁️  Smart Watcher active: monitoring {', '.join(reload_paths)}")
 
         cmd.append(app)
 
+        # FLASH PREVIEW: Share logic
+        share_url = None
+        if share:
+            local_ip = detect_local_ip()
+            if local_ip:
+                share_url = f"{scheme}://{local_ip}:{port}"
+                click.echo("\n📱 Flash Preview Enabled")
+                click.echo(f"   Local Network URL: {share_url}")
+                click.echo("   Scan to test on mobile:")
+                print_qr_code(share_url)
+            else:
+                click.echo("⚠️  Could not detect local IP for Flash Preview", err=True)
+
         # Display startup info
         click.echo(f"🚀 Starting Gobstopper application: {app}")
-        click.echo(f"📍 Server: http://{host}:{port}")
+        click.echo(f"📍 Server: {scheme}://{host}:{port}")
+        if share_url:
+             click.echo(f"📡 Shared: {share_url}")
         click.echo(f"👷 Workers: {workers}")
         click.echo(f"🧵 Threads: {threads}")
         click.echo(f"⚙️  Runtime: {runtime_mode}")
+        click.echo(f"🔄 Loop: {loop}")
         if reload:
             click.echo(f"🔄 Auto-reload: enabled")
         click.echo(f"\n💡 Press Ctrl+C to stop\n")
@@ -423,6 +493,35 @@ else:
         click.echo(f"Gobstopper v{__version__}")
         click.echo("High-performance async web framework")
         click.echo("Built for Granian's RSGI interface")
+
+
+def detect_local_ip() -> Optional[str]:
+    """Detect the local network IP address"""
+    import socket
+    try:
+        # Use a dummy socket to determine the outward facing interface
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Connect to a public DNS server (doesn't actually send data)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
+
+def print_qr_code(data: str):
+    """Print a simple ASCII QR code to stdout"""
+    try:
+        # Try to use existing library if available
+        import qrcode
+        qr = qrcode.QRCode()
+        qr.add_data(data)
+        qr.print_ascii(invert=True)
+    except ImportError:
+        # Fallback to simple banner if qrcode lib is missing
+        click.echo(f"   (Install 'qrcode' for real QR: pip install qrcode)")
+        click.echo(f"   [ {data} ]")
+
 
 
 def run_interactive_setup() -> tuple:
@@ -587,3 +686,7 @@ async def {name}(**kwargs):
 '''
     
     return code
+
+
+if CLICK_AVAILABLE:
+    cli.add_command(sdk)

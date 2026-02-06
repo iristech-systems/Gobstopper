@@ -3,7 +3,7 @@ Session storage backends for Gobstopper
 """
 import abc
 import os
-import pickle
+import msgspec
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Awaitable
@@ -51,7 +51,7 @@ async def maybe_await(result):
 
 
 class FileSessionStorage(BaseSessionStorage):
-    """File-based session storage."""
+    """File-based session storage using msgspec (JSON) for security."""
 
     def __init__(self, directory: Path):
         self.directory = directory
@@ -66,14 +66,16 @@ class FileSessionStorage(BaseSessionStorage):
 
         try:
             with open(filepath, 'rb') as f:
-                session_data = pickle.load(f)
+                data = f.read()
+                session_data = msgspec.json.decode(data)
 
             if session_data.get('expires_at', 0) < time.time():
                 self.delete(session_id)
                 return None
 
             return session_data.get('data')
-        except (pickle.UnpicklingError, FileNotFoundError):
+        except (msgspec.DecodeError, FileNotFoundError, Exception):
+            # Fallback for old pickle sessions could be added but explicit invalidation is safer
             return None
 
     def save(self, session_id: str, data: Dict[str, Any]):
@@ -84,7 +86,7 @@ class FileSessionStorage(BaseSessionStorage):
             'expires_at': time.time() + SESSION_EXPIRATION_TIME
         }
         with open(filepath, 'wb') as f:
-            pickle.dump(session_data, f)
+            f.write(msgspec.json.encode(session_data))
 
     def delete(self, session_id: str):
         """Delete a session file."""
@@ -98,9 +100,15 @@ class FileSessionStorage(BaseSessionStorage):
         for filepath in self.directory.iterdir():
             try:
                 with open(filepath, 'rb') as f:
-                    session_data = pickle.load(f)
+                    data = f.read()
+                    session_data = msgspec.json.decode(data)
+                
                 if session_data.get('expires_at', 0) < now:
                     filepath.unlink()
-            except (pickle.UnpicklingError, FileNotFoundError):
-                # Ignore corrupted or missing files
-                pass
+            except Exception:
+                # Corrupt or invalid file
+                try:
+                    filepath.unlink()
+                except Exception:
+                    pass
+

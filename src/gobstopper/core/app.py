@@ -9,6 +9,10 @@ import traceback
 import inspect
 import os
 import msgspec
+import mimetypes
+import os
+import sys
+import traceback
 from urllib.parse import unquote
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +30,7 @@ from ..http.routing import RouteHandler
 from ..websocket.connection import WebSocket
 from ..tasks.queue import TaskQueue, TaskPriority
 from ..middleware.static import StaticFileMiddleware
+from .mixins import MiddlewareMixin, RouterMixin
 
 # Try to import Rust template engine
 try:
@@ -72,110 +77,15 @@ except ImportError:
         def response_str(self, status, headers, body): pass
         def response_bytes(self, status, headers, body): pass
         def response_file(self, status, headers, file): pass
+        def response_file_range(self, status, headers, file, start, end): pass
         def response_stream(self, status, headers): pass
     
     class WebsocketProtocol:
         async def accept(self): pass
 
 
-class Gobstopper:
-    def _precompute_middleware_chain(self, route: RouteHandler):
-        """Pre-compute and cache the complete middleware chain for a route.
+class Gobstopper(MiddlewareMixin, RouterMixin):
 
-        This optimization moves middleware chain computation from request-time
-        to route registration time, eliminating 10-15% per-request overhead.
-        Now builds the actual compiled chain function, not just the stack.
-        """
-        if route._cached_middleware_stack is not None:
-            return route._cached_middleware_stack
-
-        collected: list[tuple[Callable, int, int, int]] = []  # (mw, prio, depth, idx)
-        idx_counter = 0
-
-        # App-level (depth 0)
-        for mw, prio in self.middleware:
-            collected.append((mw, prio, 0, idx_counter))
-            idx_counter += 1
-
-        # Blueprint chain (depth increases)
-        depth = 1
-        for bp in getattr(route, 'blueprint_chain', []) or []:
-            for mw, prio in getattr(bp, 'middleware', []) or []:
-                collected.append((mw, prio, depth, idx_counter))
-                idx_counter += 1
-            depth += 1
-
-        # Sort with deterministic tiebreakers: priority desc, depth asc, index asc
-        collected.sort(key=lambda t: (-t[1], t[2], t[3]))
-
-        # Dedupe by identity, preserve first occurrence
-        seen_ids: set[int] = set()
-        ordered_stack: list[MiddlewareTuple] = []
-        for mw, prio, _, _ in collected:
-            if id(mw) not in seen_ids:
-                seen_ids.add(id(mw))
-                ordered_stack.append((mw, prio))
-
-        # Route middleware goes innermost (preserve their own priority order)
-        route_mw = getattr(route, 'middleware', []) or []
-        stack: list[MiddlewareTuple] = ordered_stack + route_mw
-
-        # Cache on route
-        route._cached_middleware_stack = stack
-        return stack
-
-    def _check_conflicts(self, new_handler: RouteHandler):
-        """Collect conflicts between new route and existing ones for diagnostics.
-
-        Analyzes a new route handler against all previously registered routes to detect
-        potential conflicts such as duplicate static routes, dynamic routes that shadow
-        static routes, or overlapping patterns. Conflicts are collected for logging
-        but do not prevent route registration.
-
-        Args:
-            new_handler: The RouteHandler being registered to check for conflicts.
-
-        Note:
-            This is a best-effort analysis. Exceptions during conflict detection
-            are silently caught to avoid breaking application startup.
-            Detected conflicts are stored in self._conflicts for logging.
-        """
-        try:
-            new_is_ws = bool(new_handler.is_websocket)
-            new_static = '<' not in new_handler.pattern and '>' not in new_handler.pattern and ':' not in new_handler.pattern
-            new_regex = new_handler.regex
-            for existing in self._all_routes:
-                if bool(existing.is_websocket) != new_is_ws:
-                    continue
-                # Method intersection (ignore if none)
-                if not new_is_ws:
-                    if not set(m.upper() for m in new_handler.methods) & set(m.upper() for m in existing.methods):
-                        continue
-                exist_static = '<' not in existing.pattern and '>' not in existing.pattern and ':' not in existing.pattern
-                # Duplicate static route
-                if new_static and exist_static and existing.pattern == new_handler.pattern:
-                    self._conflicts.append({
-                        'existing': f"{existing.methods or ['WS']} {existing.pattern}",
-                        'new': f"{new_handler.methods or ['WS']} {new_handler.pattern}",
-                        'reason': 'duplicate static route for same path/method'
-                    })
-                # Dynamic shadows static
-                if new_regex and exist_static and new_regex.match(existing.pattern):
-                    self._conflicts.append({
-                        'existing': f"{existing.methods or ['WS']} {existing.pattern}",
-                        'new': f"{new_handler.methods or ['WS']} {new_handler.pattern}",
-                        'reason': 'dynamic route may shadow a more specific static route'
-                    })
-                # Static shadows dynamic (reverse)
-                if existing.regex and new_static and existing.regex.match(new_handler.pattern):
-                    self._conflicts.append({
-                        'existing': f"{existing.methods or ['WS']} {existing.pattern}",
-                        'new': f"{new_handler.methods or ['WS']} {new_handler.pattern}",
-                        'reason': 'dynamic route may shadow a more specific static route'
-                    })
-        except Exception:
-            # Best-effort conflict collection; do not break app
-            pass
     """High-performance async web framework for RSGI protocol.
     
     Gobstopper is a hybrid Python/Rust web framework built specifically for Granian's 
@@ -236,6 +146,7 @@ class Gobstopper:
     """
     
     def __init__(self, name: str = __name__, debug: bool = False, slash_policy: str = 'strict'):
+        super().__init__()
         self.name = name
         self.debug = debug
         self.logger = log
@@ -311,7 +222,24 @@ class Gobstopper:
         self.error_handlers[404] = self._default_404_handler
         self.error_handlers[500] = self._default_500_handler
 
-        # Log any collected routing conflicts at startup
+        # Mount Mission Control Dashboard
+        try:
+            from .dashboard import dashboard
+            self.register_blueprint(dashboard)
+            self.logger.info("🍬 Mission Control Dashboard available at /_gobstopper")
+        except ImportError as e:
+            self.logger.warning(f"⚠️  Mission Control Dashboard skipped: {e}")
+            # print(f"DEBUG: Dashboard import failed: {e}")
+            pass
+                
+        # Wait, I can just define it here.
+        if self.debug:
+            @self.websocket("/_hot_reload")
+            async def _hot_reload_ws(ws):
+                await ws.accept()
+                while True:
+                    await asyncio.sleep(1)
+
         @self.on_startup
         def _log_conflicts():
             if self._conflicts:
@@ -396,681 +324,6 @@ class Gobstopper:
             self.template_engine = TemplateEngine(template_folder, **kwargs)
             self.logger.info("📄 Initialized Jinja2 template engine")
     
-    def add_middleware(self, middleware: Middleware, priority: int = 0):
-        """Add middleware to the application with priority-based execution order.
-
-        Registers middleware functions that intercept HTTP requests and responses.
-        Middleware executes in priority order (highest first) and can modify requests,
-        responses, or short-circuit the handler chain. This is the primary mechanism
-        for cross-cutting concerns like authentication, logging, and request preprocessing.
-
-        Args:
-            middleware: Callable accepting (request, next_handler) and returning Response.
-                Can be sync or async. Must call next_handler(request) to continue the chain
-                or return a Response directly to short-circuit.
-            priority: Execution priority (default: 0). Higher values execute first.
-                Use negative priorities for post-processing middleware.
-
-        Examples:
-            Basic middleware:
-
-            >>> async def auth_middleware(request, next_handler):
-            ...     if not request.headers.get('authorization'):
-            ...         return Response("Unauthorized", status=401)
-            ...     return await next_handler(request)
-            >>> app.add_middleware(auth_middleware, priority=100)
-
-            Logging middleware:
-
-            >>> async def log_middleware(request, next_handler):
-            ...     start = time.time()
-            ...     response = await next_handler(request)
-            ...     duration = time.time() - start
-            ...     app.logger.info(f"{request.method} {request.path} - {duration:.3f}s")
-            ...     return response
-            >>> app.add_middleware(log_middleware, priority=50)
-
-        Note:
-            Middleware execution order:
-            1. Application-level (highest priority first)
-            2. Blueprint-level (outer to inner, by priority)
-            3. Route-level (as registered)
-
-            Middleware can be sync or async. The framework handles both transparently.
-
-        See Also:
-            :meth:`register_blueprint`: Blueprint middleware composition
-            :class:`gobstopper.middleware.cors.CORSMiddleware`: Built-in CORS middleware
-            :class:`gobstopper.middleware.security.SecurityMiddleware`: Security headers
-        """
-        self.middleware.append((middleware, priority))
-        # Sort middleware by priority, descending
-        self.middleware.sort(key=lambda item: item[1], reverse=True)
-
-    def route(self, path: str, methods: list[str] = None, name: str = None):
-        """Decorator to register HTTP routes with path parameters and method filtering.
-
-        Primary routing decorator that maps URL patterns to handler functions. Supports
-        static paths, path parameters with optional type conversion, and multiple HTTP
-        methods. This is the foundation of Gobstopper's routing system.
-
-        Args:
-            path: URL pattern to match. Supports formats:
-                - Static: ``"/users"``
-                - Path parameters: ``"/users/<user_id>"`` or ``"/users/<int:user_id>"``
-                - Multiple params: ``"/posts/<post_id>/comments/<comment_id>"``
-                Supported parameter types: str (default), int, float, uuid, path, date
-            methods: List of HTTP methods (default: ['GET']).
-                Common values: GET, POST, PUT, DELETE, PATCH, OPTIONS
-            name: Optional name for reverse routing with url_for(). Defaults to function name.
-
-        Returns:
-            Decorator function that registers the handler and returns it unchanged.
-
-        Examples:
-            Simple GET route:
-
-            >>> @app.route("/")
-            >>> async def home(request):
-            ...     return {"message": "Welcome"}
-
-            Multiple methods:
-
-            >>> @app.route("/api/data", methods=['GET', 'POST'])
-            >>> async def data_handler(request):
-            ...     if request.method == 'GET':
-            ...         return {"data": [...]}
-            ...     return {"created": True}
-
-            Path parameters with type conversion:
-
-            >>> @app.route("/users/<int:user_id>")
-            >>> async def get_user(request, user_id: int):
-            ...     # user_id is automatically converted to int
-            ...     return {"user_id": user_id}
-
-            Complex patterns:
-
-            >>> @app.route("/blog/<date:pub_date>/posts/<uuid:post_id>")
-            >>> async def get_post(request, pub_date, post_id):
-            ...     return {"date": pub_date, "id": post_id}
-
-        Note:
-            - Route conflicts are detected and logged but do not prevent registration
-            - Routes are matched in registration order when using Python router
-            - Rust router provides O(1) lookup for static routes
-            - Path parameters are automatically decoded from URL encoding
-            - Type conversion errors return 400 Bad Request automatically
-
-        See Also:
-            :meth:`get`: Convenience decorator for GET routes
-            :meth:`post`: Convenience decorator for POST routes
-            :meth:`put`: Convenience decorator for PUT routes
-            :meth:`delete`: Convenience decorator for DELETE routes
-            :meth:`websocket`: WebSocket route registration
-        """
-        if methods is None:
-            methods = ['GET']
-        
-        def decorator(func: Handler) -> Handler:
-            handler = RouteHandler(path, func, methods)
-            for mw, prio in getattr(func, '__route_middleware__', []) or []:
-                handler.use(mw, prio)
-            # conflict detection
-            self._check_conflicts(handler)
-            # register
-            if self.rust_router_available:
-                # New Rust router accepts Python path syntax directly (no conversion needed)
-                for method in methods:
-                    # New signature: insert(path, method, value, name)
-                    # Use provided name or fall back to function name
-                    route_name = name if name else getattr(func, '__name__', None)
-                    self.http_router.insert(path, method.upper(), handler, route_name)
-            else:
-                self.routes.append(handler)
-            self._all_routes.append(handler)
-            return func
-        return decorator
-
-    def get(self, path: str, name: str = None):
-        """Convenience decorator for registering GET routes.
-
-        Shorthand for ``@app.route(path, methods=['GET'])``. Use for read-only
-        operations that retrieve data without side effects.
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the GET handler.
-
-        Examples:
-            >>> @app.get("/users")
-            >>> async def list_users(request):
-            ...     return {"users": [...]}
-
-        See Also:
-            :meth:`route`: Full routing documentation and path parameter syntax
-        """
-        return self.route(path, ['GET'], name)
-
-    def post(self, path: str, name: str = None):
-        """Convenience decorator for registering POST routes.
-
-        Shorthand for ``@app.route(path, methods=['POST'])``. Use for creating
-        resources or submitting data with side effects.
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the POST handler.
-
-        Examples:
-            >>> @app.post("/users")
-            >>> async def create_user(request):
-            ...     data = await request.json()
-            ...     return {"id": new_user_id}, 201
-
-        See Also:
-            :meth:`route`: Full routing documentation
-        """
-        return self.route(path, ['POST'], name)
-
-    def put(self, path: str, name: str = None):
-        """Convenience decorator for registering PUT routes.
-
-        Shorthand for ``@app.route(path, methods=['PUT'])``. Use for full resource
-        updates (replacing entire resource).
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the PUT handler.
-
-        Examples:
-            >>> @app.put("/users/<int:user_id>")
-            >>> async def update_user(request, user_id: int):
-            ...     data = await request.json()
-            ...     return {"updated": True}
-
-        See Also:
-            :meth:`route`: Full routing documentation
-            :meth:`patch`: Partial resource updates
-        """
-        return self.route(path, ['PUT'], name)
-
-    def delete(self, path: str, name: str = None):
-        """Convenience decorator for registering DELETE routes.
-
-        Shorthand for ``@app.route(path, methods=['DELETE'])``. Use for removing
-        resources.
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the DELETE handler.
-
-        Examples:
-            >>> @app.delete("/users/<int:user_id>")
-            >>> async def delete_user(request, user_id: int):
-            ...     return {"deleted": True}, 204
-
-        See Also:
-            :meth:`route`: Full routing documentation
-        """
-        return self.route(path, ['DELETE'], name)
-
-    def patch(self, path: str, name: str = None):
-        """Convenience decorator for registering PATCH routes.
-
-        Shorthand for ``@app.route(path, methods=['PATCH'])``. Use for partial
-        resource updates (modifying specific fields).
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the PATCH handler.
-
-        Examples:
-            >>> @app.patch("/users/<int:user_id>")
-            >>> async def patch_user(request, user_id: int):
-            ...     data = await request.json()  # Only changed fields
-            ...     return {"updated": True}
-
-        See Also:
-            :meth:`route`: Full routing documentation
-            :meth:`put`: Full resource updates
-        """
-        return self.route(path, ['PATCH'], name)
-
-    def options(self, path: str, name: str = None):
-        """Convenience decorator for registering OPTIONS routes.
-
-        Shorthand for ``@app.route(path, methods=['OPTIONS'])``. Use for CORS
-        preflight requests or capability discovery.
-
-        Args:
-            path: URL pattern to match (same format as :meth:`route`).
-
-        Returns:
-            Decorator function that registers the OPTIONS handler.
-
-        Examples:
-            >>> @app.options("/api/data")
-            >>> async def data_options(request):
-            ...     return Response("", headers={"Allow": "GET, POST"})
-
-        See Also:
-            :meth:`route`: Full routing documentation
-            :class:`gobstopper.middleware.cors.CORSMiddleware`: Automatic CORS handling
-        """
-        return self.route(path, ['OPTIONS'], name)
-    
-    def mount(self, path: str, app: 'Gobstopper'):
-        """Mount a sub-application at the given path prefix.
-
-        Registers a complete Gobstopper application to handle requests under a specific
-        path prefix. This enables modular application architecture where different
-        subsystems can be developed independently and composed together.
-
-        Args:
-            path: URL prefix for the sub-application. Must start with '/'.
-                Trailing slashes are automatically normalized.
-                Examples: "/api", "/admin", "/v1"
-            app: Gobstopper application instance to mount. All routes in the mounted
-                app will be accessible under the specified prefix.
-
-        Returns:
-            The mounted application instance (for chaining).
-
-        Examples:
-            Basic mounting:
-
-            >>> # Create admin sub-application
-            >>> admin_app = Gobstopper("admin")
-            >>> @admin_app.get("/dashboard")
-            >>> async def admin_dashboard(request):
-            ...     return {"admin": True}
-            >>>
-            >>> # Mount under /admin prefix
-            >>> app.mount("/admin", admin_app)
-            >>> # Now accessible at: /admin/dashboard
-
-            Multiple mounts:
-
-            >>> api_v1 = Gobstopper("api_v1")
-            >>> api_v2 = Gobstopper("api_v2")
-            >>> app.mount("/api/v1", api_v1)
-            >>> app.mount("/api/v2", api_v2)
-
-            Mounting with separate configurations:
-
-            >>> debug_app = Gobstopper("debug", debug=True)
-            >>> @debug_app.get("/info")
-            >>> async def debug_info(request):
-            ...     return {"debug": True}
-            >>> app.mount("/_debug", debug_app)
-
-        Note:
-            - Mounted apps maintain their own middleware, error handlers, and configuration
-            - Path stripping is automatic: mounted app sees paths relative to mount point
-            - Mount order matters: earlier mounts are checked first
-            - Mount points should not overlap with main app routes
-
-        See Also:
-            :meth:`register_blueprint`: Alternative for simpler route grouping
-        """
-        if not path.startswith('/'):
-            path = '/' + path
-        if path.endswith('/'):
-            path = path[:-1]
-        self.mounts.append((path, app))
-        return app
-    
-    def register_blueprint(self, blueprint, url_prefix: str | None = None):
-        """Register a Blueprint on this app with an optional URL prefix.
-
-        Blueprints provide a structured way to organize related routes, middleware,
-        and handlers into reusable components. They support nesting, scoped middleware,
-        and can have their own template and static file directories.
-
-        Args:
-            blueprint: Blueprint instance to register. The blueprint contains routes,
-                middleware, hooks (before_request, after_request), and optional
-                template/static folder configurations.
-            url_prefix: Optional URL prefix for all blueprint routes (default: None).
-                If provided, overrides blueprint's own url_prefix. Must start with '/'.
-                Examples: "/api", "/admin", "/v1"
-
-        Examples:
-            Basic blueprint registration:
-
-            >>> from gobstopper.core.blueprint import Blueprint
-            >>> api = Blueprint("api", url_prefix="/api")
-            >>>
-            >>> @api.get("/users")
-            >>> async def list_users(request):
-            ...     return {"users": [...]}
-            >>>
-            >>> app.register_blueprint(api)
-            >>> # Route available at: /api/users
-
-            Override prefix at registration:
-
-            >>> admin_bp = Blueprint("admin", url_prefix="/admin")
-            >>> app.register_blueprint(admin_bp, url_prefix="/dashboard")
-            >>> # Routes use /dashboard instead of /admin
-
-            Nested blueprints:
-
-            >>> api = Blueprint("api", url_prefix="/api")
-            >>> v1 = Blueprint("v1", url_prefix="/v1")
-            >>> v1.get("/users")(user_handler)
-            >>> api.register_blueprint(v1)
-            >>> app.register_blueprint(api)
-            >>> # Route available at: /api/v1/users
-
-            Blueprint with middleware:
-
-            >>> auth_bp = Blueprint("auth")
-            >>> auth_bp.add_middleware(auth_middleware, priority=100)
-            >>> @auth_bp.get("/profile")
-            >>> async def profile(request):
-            ...     return {"user": request.user}
-            >>> app.register_blueprint(auth_bp, url_prefix="/secure")
-
-        Note:
-            Middleware execution order with blueprints:
-            1. Application-level middleware (highest priority first)
-            2. Parent blueprint middleware (outer to inner)
-            3. Child blueprint middleware
-            4. Route-level middleware (innermost)
-
-            Before/after request handlers from blueprints are attached to the app.
-            Blueprint template folders are added to template search paths.
-            Blueprint static folders automatically get static file middleware.
-
-        See Also:
-            :class:`gobstopper.core.blueprint.Blueprint`: Blueprint class documentation
-            :meth:`add_middleware`: Adding middleware to applications
-            :meth:`mount`: Alternative for mounting complete sub-applications
-        """
-        base_prefix = url_prefix if url_prefix is not None else getattr(blueprint, 'url_prefix', None)
-
-        def _join(prefix: str | None, path: str) -> str:
-            if not prefix:
-                return path
-            if not prefix.startswith('/'):
-                prefix_local = '/' + prefix
-            else:
-                prefix_local = prefix
-            if prefix_local.endswith('/'):
-                prefix_local = prefix_local[:-1]
-            if not path.startswith('/'):
-                path = '/' + path
-            return prefix_local + path
-
-        def _register(bp, acc_prefix: str | None, chain: list[Any]):
-            # Attach hooks to app with signature validation
-            for h in getattr(bp, 'before_request_handlers', []) or []:
-                sig = inspect.signature(h)
-                if len(sig.parameters) != 1:
-                    raise TypeError(f"Blueprint before_request handler '{getattr(h, '__name__', h)}' must accept exactly 1 argument: (request)")
-                self.before_request(h)
-            for h in getattr(bp, 'after_request_handlers', []) or []:
-                sig = inspect.signature(h)
-                if len(sig.parameters) != 2:
-                    raise TypeError(f"Blueprint after_request handler '{getattr(h, '__name__', h)}' must accept exactly 2 arguments: (request, response)")
-                self.after_request(h)
-            # Per-blueprint templates
-            tpl = getattr(bp, 'template_folder', None)
-            if tpl and self.template_engine:
-                ns = getattr(bp, 'name', None) or (Path(tpl).name if isinstance(tpl, (str, Path)) else None)
-                try:
-                    self.template_engine.add_search_path(tpl, namespace=ns)
-                except TypeError:
-                    # Backward compatibility if add_search_path has old signature
-                    self.template_engine.add_search_path(tpl)
-            # Per-blueprint static
-            static_dir = getattr(bp, 'static_folder', None)
-            if static_dir:
-                static_prefix = _join(acc_prefix or '', '/static')
-                self.add_middleware(StaticFileMiddleware(static_dir, url_prefix=static_prefix), priority=0)
-
-            # Register routes for this blueprint
-            for route in getattr(bp, 'routes', []) or []:
-                full_path = _join(acc_prefix, route.pattern)
-                if route.is_websocket:
-                    handler = RouteHandler(full_path, route.handler, [], is_websocket=True)
-                else:
-                    handler = RouteHandler(full_path, route.handler, route.methods)
-                # copy route-level middleware and set chain for scoped middleware
-                for mw, prio in getattr(route, 'middleware', []) or []:
-                    handler.use(mw, prio)
-                handler.blueprint_chain = chain + [bp]
-
-                # conflict detection
-                self._check_conflicts(handler)
-
-                if self.rust_router_available:
-                    # New Rust router accepts Python path syntax directly
-                    # Build qualified route name: blueprint.function_name
-                    func_name = getattr(route.handler, '__name__', None)
-                    bp_name = getattr(bp, 'name', None)
-                    if bp_name and func_name:
-                        route_name = f"{bp_name}.{func_name}"
-                    else:
-                        route_name = func_name
-
-                    if route.is_websocket:
-                        # WebSocket routes use "WEBSOCKET" as the method
-                        self.websocket_router.insert(full_path, "WEBSOCKET", handler, route_name)
-                    else:
-                        for method in route.methods:
-                            # New signature: insert(path, method, value, name)
-                            self.http_router.insert(full_path, method.upper(), handler, route_name)
-                else:
-                    self.routes.append(handler)
-                self._all_routes.append(handler)
-
-            # Recurse into children
-            for child, child_prefix in getattr(bp, 'children', []) or []:
-                next_prefix = _join(acc_prefix, child_prefix if child_prefix is not None else getattr(child, 'url_prefix', None) or '')
-                _register(child, next_prefix, chain + [bp])
-
-        # Track blueprint root and register
-        try:
-            self.blueprints.append(blueprint)
-        except Exception:
-            pass
-        _register(blueprint, base_prefix, [])
-
-    def websocket(self, path: str):
-        """Decorator for registering WebSocket routes with path parameters.
-
-        Registers WebSocket connection handlers that manage bidirectional communication
-        channels. WebSocket routes support the same path parameter syntax as HTTP routes
-        but use a different protocol lifecycle (connect, message exchange, disconnect).
-
-        Args:
-            path: URL pattern to match. Supports same format as HTTP routes:
-                - Static: ``"/ws/chat"``
-                - Path parameters: ``"/ws/room/<room_id>"``
-                - Type conversion: ``"/ws/user/<int:user_id>"``
-
-        Returns:
-            Decorator function that registers the WebSocket handler.
-
-        Examples:
-            Basic WebSocket echo:
-
-            >>> @app.websocket("/ws/echo")
-            >>> async def echo_handler(websocket):
-            ...     await websocket.accept()
-            ...     async for message in websocket:
-            ...         await websocket.send(f"Echo: {message}")
-
-            WebSocket with path parameters:
-
-            >>> @app.websocket("/ws/room/<room_id>")
-            >>> async def room_handler(websocket, room_id: str):
-            ...     await websocket.accept()
-            ...     # Join room
-            ...     async for message in websocket:
-            ...         # Broadcast to room
-            ...         await broadcast_to_room(room_id, message)
-
-            WebSocket with authentication:
-
-            >>> @app.websocket("/ws/notifications")
-            >>> async def notifications(websocket):
-            ...     token = websocket.query_params.get('token')
-            ...     if not validate_token(token):
-            ...         await websocket.close(code=1008)  # Policy violation
-            ...         return
-            ...     await websocket.accept()
-            ...     # Send notifications
-            ...     while True:
-            ...         notification = await get_next_notification()
-            ...         await websocket.send_json(notification)
-
-        Note:
-            - WebSocket handlers must call ``await websocket.accept()`` before communication
-            - Handlers should handle connection cleanup (use try/finally)
-            - Path parameters work identically to HTTP routes
-            - WebSocket middleware is not yet supported (use before_request for auth)
-            - Connection errors are logged automatically
-
-        See Also:
-            :class:`gobstopper.websocket.connection.WebSocket`: WebSocket connection API
-            :meth:`route`: HTTP route registration for comparison
-        """
-        def decorator(func: Handler) -> Handler:
-            handler = RouteHandler(path, func, [], is_websocket=True)
-            for mw, prio in getattr(func, '__route_middleware__', []) or []:
-                handler.use(mw, prio)
-            if self.rust_router_available:
-                # New Rust router signature: insert(path, method, value, name)
-                # Use "WEBSOCKET" as method for WebSocket routes
-                route_name = getattr(func, '__name__', None)
-                self.websocket_router.insert(path, "WEBSOCKET", handler, route_name)
-            else:
-                self.routes.append(handler)
-            self._all_routes.append(handler)
-            return func
-        return decorator
-
-    def url_for(self, name: str, **params) -> str:
-        """Build a URL for a named route with parameters (reverse routing).
-
-        Flask/Quart-style reverse routing that generates URLs from route names.
-        Routes are automatically named with their function name, or you can provide
-        a custom name using the ``name`` parameter in route decorators. Blueprint
-        routes are qualified with the blueprint name (e.g., 'admin.login').
-
-        Args:
-            name: Route name (function name, custom name, or 'blueprint.function')
-            **params: URL parameters to substitute into the route pattern
-
-        Returns:
-            Generated URL path as a string
-
-        Raises:
-            ValueError: If the named route doesn't exist or parameters are missing
-
-        Examples:
-            Basic usage:
-
-            >>> @app.get('/users/<int:id>', name='user_detail')
-            >>> async def get_user(request):
-            ...     return {"user": ...}
-            >>>
-            >>> app.url_for('user_detail', id=123)
-            '/users/123'
-
-            With multiple parameters:
-
-            >>> @app.get('/posts/<int:year>/<int:month>')
-            >>> async def posts_archive(request):
-            ...     return {"posts": ...}
-            >>>
-            >>> app.url_for('posts_archive', year=2024, month=12)
-            '/posts/2024/12'
-
-            Blueprint routes (Flask-style):
-
-            >>> admin = Blueprint('admin', __name__)
-            >>> @admin.get('/login')
-            >>> async def login(request):
-            ...     return {"login": True}
-            >>>
-            >>> app.register_blueprint(admin, url_prefix='/admin')
-            >>> app.url_for('admin.login')  # Returns '/admin/login'
-            '/admin/login'
-
-            In request handlers with redirect:
-
-            >>> @app.post('/users')
-            >>> async def create_user(request):
-            ...     new_id = save_user()
-            ...     return redirect(app.url_for('user_detail', id=new_id))
-
-        Note:
-            - Requires Rust router for best performance
-            - Falls back to route scanning if Rust router unavailable
-            - Route names default to function names
-            - Custom names provided via decorator ``name`` parameter
-
-        See Also:
-            :func:`redirect`: Convenience function for redirecting to URLs
-            :meth:`route`: How to register named routes
-        """
-        if self.rust_router_available:
-            # Use Rust router's url_for
-            url = self.http_router.url_for(name, params if params else None)
-            if url is None:
-                raise ValueError(f"No route named '{name}' found")
-            return url
-        else:
-            # Fallback: scan Python routes
-            for route in self._all_routes:
-                handler_name = getattr(route.handler, '__name__', None)
-
-                # Check for exact match (function name)
-                if handler_name == name:
-                    # Build URL by replacing parameters in pattern
-                    url = route.pattern
-                    for key, value in params.items():
-                        # Try different parameter formats
-                        url = url.replace(f"<{key}>", str(value))
-                        url = url.replace(f"<int:{key}>", str(value))
-                        url = url.replace(f"<uuid:{key}>", str(value))
-                        url = url.replace(f"<date:{key}>", str(value))
-                        url = url.replace(f"<path:{key}>", str(value))
-                    return url
-
-                # Check for blueprint-qualified name (blueprint.function)
-                if '.' in name and route.blueprint_chain:
-                    # Get the last blueprint in the chain (closest to route)
-                    bp = route.blueprint_chain[-1] if route.blueprint_chain else None
-                    bp_name = getattr(bp, 'name', None) if bp else None
-                    if bp_name and handler_name:
-                        qualified_name = f"{bp_name}.{handler_name}"
-                        if qualified_name == name:
-                            url = route.pattern
-                            for key, value in params.items():
-                                url = url.replace(f"<{key}>", str(value))
-                                url = url.replace(f"<int:{key}>", str(value))
-                                url = url.replace(f"<uuid:{key}>", str(value))
-                                url = url.replace(f"<date:{key}>", str(value))
-                                url = url.replace(f"<path:{key}>", str(value))
-                            return url
-            raise ValueError(f"No route named '{name}' found")
-
     def task(self, name: str = None, category: str = "default"):
         """Decorator to register background task handlers with categorization.
 
@@ -1940,6 +1193,7 @@ class Gobstopper:
                 "debug": self.debug,
                 "request_id": getattr(request, 'id', 'N/A'),
                 "request_path": request.path,
+                "request_method": request.method,
                 "request": request,
                 "traceback": None,
             }
@@ -1982,6 +1236,7 @@ class Gobstopper:
                 "debug": self.debug,
                 "request_id": getattr(request, 'id', 'N/A'),
                 "request_path": request.path,
+                "request_method": request.method,
                 "request": request,
                 "traceback": tb_str,
             }
@@ -2054,7 +1309,7 @@ class Gobstopper:
         # If shutting down, refuse new requests gracefully
         if not self._accepting_requests:
             resp = Response("Server is shutting down", status=503, headers={"connection": "close"})
-            await self._send_response(protocol, resp)
+            await self._send_response(protocol, resp, request=None)
             return
         
         request = Request(scope, protocol)
@@ -2119,7 +1374,7 @@ class Gobstopper:
                         if alt_route:
                             # Issue 308 Permanent Redirect
                             resp = Response('', status=308, headers={'location': alt_path})
-                            await self._send_response(protocol, resp)
+                            await self._send_response(protocol, resp, request=request)
                             return
                     # Distinguish 404 vs 405 by probing allowed methods
                     allowed = self._allowed_methods_for_path(request.path, is_websocket=False)
@@ -2127,19 +1382,19 @@ class Gobstopper:
                         # 405 Method Not Allowed
                         resp = self._problem("Method Not Allowed", 405)
                         resp.headers['Allow'] = ', '.join(sorted(set(allowed)))
-                        await self._send_response(protocol, resp)
+                        await self._send_response(protocol, resp, request=request)
                         return
                     # No matching route; run global middleware around a 404 responder
                     async def not_found_handler(req: Request) -> Response:
                         return await self.error_handlers[404](req, Exception("Not Found"))
                     stack = self.middleware[:]  # only app-level
                     response = await self._apply_middleware(request, stack, not_found_handler)
-                    await self._send_response(protocol, response)
+                    await self._send_response(protocol, response, request=request)
                     return
                 
                 # If router flagged conversion error from converter, return 400
                 if isinstance(path_params, dict) and path_params.get('__conversion_error__'):
-                    await self._send_response(protocol, self._problem("Invalid path parameter", 400))
+                    await self._send_response(protocol, self._problem("Invalid path parameter", 400), request=request)
                     return
                 
                 # Prepare kwargs and body model
@@ -2246,7 +1501,16 @@ class Gobstopper:
                             elif isinstance(e, RequestTooLarge):
                                 resp = self._problem("Request body too large", 413)
                             else:
-                                raise
+                                if self.debug and "text/html" in req.headers.get("accept", ""):
+                                    # PRISM ERROR PAGE
+                                    from .prism import PrismErrorPage
+                                    resp = Response(
+                                        PrismErrorPage(req, e),
+                                        status=500,
+                                        content_type="text/html"
+                                    )
+                                else:
+                                    raise
                         if not isinstance(resp, (Response, FileResponse, StreamResponse)):
                             resp = JSONResponse(resp) if isinstance(resp, (dict, list)) else Response(str(resp))
                     # ensure request id header without mutating global handlers
@@ -2258,9 +1522,13 @@ class Gobstopper:
                     return resp
 
                 response = await self._apply_middleware(request, stack, final_handler)
-                await self._send_response(protocol, response)
+                await self._send_response(protocol, response, request=request)
                 
             except Exception as e:
+                # Fallback printing because loguru might fail to pickle some exceptions
+                print("!!! UNHANDLED EXCEPTION !!!", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                
                 self.logger.exception(
                     "Unhandled exception during HTTP request processing",
                     extra={
@@ -2273,8 +1541,8 @@ class Gobstopper:
                 )
                 try:
                     handler = self.error_handlers.get(500, self._default_500_handler)
-                    response = await handler(request, e)
-                    await self._send_response(protocol, response)
+                    response = await handler(request, e) if asyncio.iscoroutinefunction(handler) else handler(request, e)
+                    await self._send_response(protocol, response, request=request)
                 except Exception as inner_e:
                     self.logger.exception(
                         "Critical error in 500 error handler",
@@ -2336,28 +1604,77 @@ class Gobstopper:
             if hasattr(protocol, 'close'):
                 await protocol.close(1011) # 1011: "Internal Error"
     
-    async def _send_response(self, protocol: HTTPProtocol, response: Response):
+    async def _send_response(self, protocol: HTTPProtocol, response: Response, request: Optional[Request] = None):
         """Send response using RSGI protocol with appropriate method.
 
         Dispatches responses to the correct RSGI protocol method based on response
         type. Handles regular responses, file responses, and streaming responses
-        with proper content type handling.
+        with proper content type handling. Supports Range requests for file responses.
 
         Args:
             protocol: RSGI HTTP protocol object for sending the response.
             response: Response object (Response, FileResponse, or StreamResponse).
+            request: Optional request object (needed for Range header inspection).
 
         Note:
             - FileResponse uses protocol.response_file (zero-copy serving)
+            - Supports partial content serving via response_file_range if Range header exists
             - StreamResponse uses protocol.response_stream (chunked transfer)
             - Regular Response uses protocol.response_str or response_bytes
             - Headers are converted to RSGI format (list of tuples)
         """
         if isinstance(response, FileResponse):
+            # Check for Range header to support partial content
+            if request and 'range' in request.headers:
+                range_header = request.headers['range']
+                # Basic Range parser for 'bytes=start-end'
+                # Supports: 'bytes=0-499', 'bytes=500-', 'bytes=-500' is NOT fully supported yet by this simple regex
+                # RSGI range is start (inclusive) to end (exclusive)
+                
+                # Granian's RSGI implementation expects simple start/end
+                range_match = re.search(r'^bytes=(\d+)-(\d*)$', range_header)
+                if range_match:
+                    try:
+                        file_size = os.path.getsize(response.file_path)
+                        start_str, end_str = range_match.groups()
+                        start = int(start_str)
+                        
+                        if end_str:
+                            end = int(end_str) + 1  # Range header is inclusive, RSGI/slice is exclusive
+                        else:
+                            end = file_size
+                        
+                        # Validate range
+                        if 0 <= start < end <= file_size:
+                            # Set Content-Range header
+                            response.headers['content-range'] = f'bytes {start}-{end-1}/{file_size}'
+                            response.status = 206
+                            protocol.response_file_range(
+                                response.status, 
+                                response.to_rsgi_headers(), 
+                                response.file_path, 
+                                start, 
+                                end
+                            )
+                            return
+                        else:
+                            # Invalid range -> 416 Range Not Satisfiable
+                            protocol.response_str(
+                                416, 
+                                [('content-range', f'bytes */{file_size}')], 
+                                "Range Not Satisfiable"
+                            )
+                            return
+                    except Exception:
+                        # Fallback to full file on parsing error
+                        pass
+                        
             protocol.response_file(response.status, response.to_rsgi_headers(), response.file_path)
         elif isinstance(response, StreamResponse):
             transport = protocol.response_stream(response.status, [(k, v) for k, v in response.headers.items()])
-            async for chunk in response.generator():
+            
+            iterator = response.generator() if callable(response.generator) else response.generator
+            async for chunk in iterator:
                 if isinstance(chunk, str):
                     await transport.send_str(chunk)
                 else:

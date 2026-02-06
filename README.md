@@ -54,7 +54,12 @@ A **production-ready**, high-performance async web framework built specifically 
 - **Production Ready**: Comprehensive error handling, logging, and monitoring
 - **CLI Tools**: Project initialization, task workers, and management commands
 - **Cross-Platform**: Native wheels for macOS ARM64, Linux x86_64/ARM64
-- **Developer Experience**: Clean APIs, helpful error messages, hot reload
+### ⚡ **Developer Experience**
+- **Flash Preview**: One-command mobile testing via `gobstopper run --share` (QR Code generation).
+- **Mission Control**: Built-in dashboard (`/_gobstopper`) for checking system health, memory usage, and background tasks.
+- **Smart Watcher**: Intelligent file watching that knows about your templates, config, and env files.
+- **Error Prism**: Interactive, rich error pages that make debugging a joy.
+- **Hot Reload**: Fast, reliable reloader that works with Python code and Rust templates.
 
 ## 📦 Installation
 

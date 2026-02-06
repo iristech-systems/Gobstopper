@@ -13,6 +13,17 @@ port = 8000
 workers = 1
 interface = "rsgi"
 log_level = "info"
+access_log = true
+loop = "uvloop" # auto, asyncio, uvloop
+# backlog = 16384
+
+# SSL/TLS Configuration
+# For local development with valid certs, use mkcert:
+# 1. mkcert -install
+# 2. mkcert localhost 127.0.0.1 ::1
+# 3. Uncomment below and point to generated files
+# ssl_cert = "./localhost+2.pem"
+# ssl_key = "./localhost+2-key.pem"
 
 [security]
 # IMPORTANT: Generate a secure random secret key for production
