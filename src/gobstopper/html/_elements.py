@@ -190,6 +190,10 @@ def _python_to_html_name(name: str) -> str:
     if name == "_":
         return "_"
 
+    # Trust explicit data-* attributes (preserve underscores for Datastar/HTMX modifiers)
+    if name.startswith("data-"):
+        return name
+
     html_name = name
     name_without_underscore_suffix = name.removesuffix("_")
     if keyword.iskeyword(name_without_underscore_suffix):

@@ -68,7 +68,7 @@ async def registration_page(request):
         head[
             meta(charset="utf-8"),
             meta(name="viewport", content="width=device-width, initial-scale=1.0"),
-            script(type="module", src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"),
+            script(type="module", src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"),
             # Simple styles
             link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"),
             style["""
@@ -120,7 +120,7 @@ async def register(request):
     page = html[
         head[
             meta(charset="utf-8"),
-            script(type="module", src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"),
+            script(type="module", src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"),
             link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css")
         ],
         body[

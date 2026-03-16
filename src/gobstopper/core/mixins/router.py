@@ -163,13 +163,43 @@ class RouterMixin:
             pass
         _register(blueprint, base_prefix, [])
 
-    def route(self, path: str, methods: list[str] = None, name: str = None):
-        """Decorator to register HTTP routes."""
+    def route(self, path: str, methods: list[str] = None, name: str = None,
+              rate_limit: str = None, rate_limit_by: str = "ip"):
+        """Decorator to register HTTP routes.
+
+        Args:
+            path: URL pattern (e.g. ``"/users/<int:id>"``).
+            methods: HTTP methods. Defaults to ``["GET"]``.
+            name: Optional route name for :meth:`url_for`.
+            rate_limit: Optional rate-limit spec such as ``"20/minute"`` or
+                ``"5/second"``.  Periods: ``second``, ``minute``, ``hour``.
+            rate_limit_by: How to key the rate limiter.  ``"ip"`` (default)
+                uses the client IP; ``"global"`` shares a single bucket for
+                all callers.
+        """
         if methods is None:
             methods = ['GET']
-        
+
         def decorator(func: Handler) -> Handler:
-            handler = RouteHandler(path, func, methods)
+            _func = func
+            if rate_limit is not None:
+                from ...utils.rate_limiter import _parse_rate_limit as _prl
+                from ...http.problem import problem as _problem
+                _limiter = _prl(rate_limit)
+                _key = (lambda req: "__global__") if rate_limit_by == "global" \
+                       else (lambda req: req.client_ip)
+                _orig = _func
+
+                async def _rate_limited(request, **kwargs):
+                    if not _limiter.allow(_key(request)):
+                        return _problem("Too Many Requests", 429)
+                    return await _orig(request, **kwargs)
+
+                _rate_limited.__name__ = func.__name__
+                _rate_limited.__wrapped__ = _orig
+                _func = _rate_limited
+
+            handler = RouteHandler(path, _func, methods)
             for mw, prio in getattr(func, '__route_middleware__', []) or []:
                 handler.use(mw, prio)
             # conflict detection
@@ -185,23 +215,23 @@ class RouterMixin:
             return func
         return decorator
 
-    def get(self, path: str, name: str = None):
-        return self.route(path, ['GET'], name)
+    def get(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['GET'], name, **kwargs)
 
-    def post(self, path: str, name: str = None):
-        return self.route(path, ['POST'], name)
+    def post(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['POST'], name, **kwargs)
 
-    def put(self, path: str, name: str = None):
-        return self.route(path, ['PUT'], name)
+    def put(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['PUT'], name, **kwargs)
 
-    def delete(self, path: str, name: str = None):
-        return self.route(path, ['DELETE'], name)
+    def delete(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['DELETE'], name, **kwargs)
 
-    def patch(self, path: str, name: str = None):
-        return self.route(path, ['PATCH'], name)
+    def patch(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['PATCH'], name, **kwargs)
 
-    def options(self, path: str, name: str = None):
-        return self.route(path, ['OPTIONS'], name)
+    def options(self, path: str, name: str = None, **kwargs):
+        return self.route(path, ['OPTIONS'], name, **kwargs)
 
     def websocket(self, path: str):
         """Decorator for registering WebSocket routes."""

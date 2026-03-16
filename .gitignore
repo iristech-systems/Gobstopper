@@ -232,22 +232,7 @@ rust/gobstopper_core_rs/dist/
 rust/gobstopper_core_rs/.venv/
 
 # Runtime/Session data
-sessions/
-
-# Development/deployment configs (use examples instead)
-dev.json
-production.toml
-config.production.toml
-
-# Benchmark/submission code
-techempower-submission/
-
-# Root test files (use tests/ directory)
-test_*.py
-*_test.py
-
-# Runtime/Session data
-sessions/
+/sessions/
 
 # Development/deployment configs (use examples instead)
 dev.json

@@ -2,7 +2,7 @@
 import asyncio
 import datetime
 from gobstopper import Gobstopper, Request, Response
-from gobstopper.ext.datastar import Datastar, MergeMode
+from gobstopper.extensions.datastar import Datastar, MergeMode
 from gobstopper.middleware.security import SecurityMiddleware
 from gobstopper.middleware.cors import CORSMiddleware
 from gobstopper.html import html as HTML, h1 as H1, p as P, div as Div, style as Style, script as Script
@@ -33,7 +33,7 @@ HTML = """
 <head>
     <title>Datastar POC</title>
     <!-- Load Datastar from CDN (Official) -->
-    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"></script>
     <style>
         body { font-family: sans-serif; padding: 2rem; background: #111; color: #eee; }
         .clock { font-size: 3rem; font-weight: bold; color: #00ff88; }

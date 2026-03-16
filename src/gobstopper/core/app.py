@@ -32,20 +32,7 @@ from ..tasks.queue import TaskQueue, TaskPriority
 from ..middleware.static import StaticFileMiddleware
 from .mixins import MiddlewareMixin, RouterMixin
 
-# Try to import Rust template engine
-try:
-    from ..templates import RustTemplateEngineWrapper, RUST_AVAILABLE
-except ImportError:
-    RustTemplateEngineWrapper = None
-    RUST_AVAILABLE = False
-
-# Try to import Jinja2 template engine (optional, for error pages fallback)
-try:
-    from ..templates.engine import TemplateEngine
-    JINJA2_TEMPLATE_ENGINE_AVAILABLE = True
-except ImportError:
-    TemplateEngine = None
-    JINJA2_TEMPLATE_ENGINE_AVAILABLE = False
+from ..templates.engine import TemplateEngine, TemplateRenderError
 
 # Type aliases (compatible with Python 3.10+)
 Handler = Callable[..., Any]
@@ -82,6 +69,15 @@ except ImportError:
     
     class WebsocketProtocol:
         async def accept(self): pass
+
+# Try to import RSGIProtocolClosed from granian
+try:
+    from granian._granian import RSGIProtocolClosed
+except ImportError:
+    # Fallback if granian structure changes
+    class RSGIProtocolClosed(Exception):
+        """Fallback for RSGIProtocolClosed if import fails"""
+        pass
 
 
 class Gobstopper(MiddlewareMixin, RouterMixin):
@@ -145,7 +141,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         :meth:`add_background_task`: Queue background tasks
     """
     
-    def __init__(self, name: str = __name__, debug: bool = False, slash_policy: str = 'strict'):
+    def __init__(self, name: str = __name__, debug: bool = False, slash_policy: str = 'strict', health_check: bool = True):
         super().__init__()
         self.name = name
         self.debug = debug
@@ -168,30 +164,26 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self.template_engine = None
         self.task_queue = TaskQueue()
 
+        # Metrics configuration (typically from CLI/env)
+        self.metrics_enabled = os.getenv("GOBSTOPPER_METRICS_ENABLED", "0") == "1"
+        try:
+            self.metrics_port = int(os.getenv("GOBSTOPPER_METRICS_PORT", "9090"))
+        except ValueError:
+            self.metrics_port = 9090
+        
+        self.logger.info(f"📊 metrics_enabled: {self.metrics_enabled} (port {self.metrics_port})")
+
         # Internal template engine for themed error pages
-        # Prefer Rust templates, fallback to Jinja2 if available, otherwise None
         _core_dir = Path(__file__).parent.resolve()
         _internal_templates_path = _core_dir.parent / "templates"
         self._error_template_engine = None
 
-        if RUST_AVAILABLE:
-            try:
-                self._error_template_engine = RustTemplateEngineWrapper(
-                    str(_internal_templates_path),
-                    fallback_to_jinja=False
-                )
-            except Exception as e:
-                print(f"Failed to initialize Rust template engine: {e}")
-                import traceback
-                traceback.print_exc()
-
-        if self._error_template_engine is None and JINJA2_TEMPLATE_ENGINE_AVAILABLE:
-            try:
-                self._error_template_engine = TemplateEngine(str(_internal_templates_path))
-            except Exception as e:
-                print(f"Failed to initialize Jinja2 template engine: {e}")
-                import traceback
-                traceback.print_exc()
+        try:
+            self._error_template_engine = TemplateEngine(str(_internal_templates_path))
+        except Exception as e:
+            print(f"Failed to initialize template engine: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Track startup state
         self._startup_complete = False
@@ -203,6 +195,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self._inflight_zero = asyncio.Event()
         self._inflight_zero.set()
         self._shutdown_hooks: list[Callable[[], Any] | Callable[[], Awaitable[Any]]] = []
+
+        # Recurring / scheduled tasks (@app.repeat)
+        self._scheduled_tasks: list[dict] = []
+        self._running_scheduled: list[asyncio.Task] = []
 
         # Routing
         self.rust_router_available = RUST_ROUTER_AVAILABLE
@@ -229,8 +225,16 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             self.logger.info("🍬 Mission Control Dashboard available at /_gobstopper")
         except ImportError as e:
             self.logger.warning(f"⚠️  Mission Control Dashboard skipped: {e}")
-            # print(f"DEBUG: Dashboard import failed: {e}")
             pass
+
+        # Mount health / readiness endpoints
+        if health_check:
+            try:
+                from .health import health_bp
+                self.register_blueprint(health_bp)
+                self.logger.info("💚 Health endpoints available at /health and /ready")
+            except ImportError as e:
+                self.logger.warning(f"⚠️  Health endpoints skipped: {e}")
                 
         # Wait, I can just define it here.
         if self.debug:
@@ -247,82 +251,30 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 for c in self._conflicts:
                     self.logger.warning(f" - {c['reason']}: existing={c['existing']} new={c['new']}")
     
-    def init_templates(self, template_folder: str = "templates", use_rust: bool = None, **kwargs):
-        """Initialize template engine with Jinja2 or Rust backend.
-        
-        Configures the template rendering system with either the Python Jinja2 
-        engine or the high-performance Rust template engine. The Rust engine
-        provides significant performance improvements and supports streaming
-        template rendering for large datasets.
-        
+    def init_templates(self, template_folder: str = "templates", **kwargs):
+        """Initialize the Jinja2 template engine.
+
         Args:
             template_folder: Directory path containing template files.
-                Must be relative to application root or absolute path.
-            use_rust: Template engine selection:
-                - ``None``: Auto-detect (uses Rust if available)
-                - ``True``: Force Rust engine (raises ImportError if unavailable)  
-                - ``False``: Force Python Jinja2 engine
-            **kwargs: Additional template engine options:
+            **kwargs: Options forwarded to :class:`TemplateEngine`:
                 - auto_reload (bool): Watch templates for changes (default: True)
                 - cache_size (int): Template cache size (default: 400)
-                - enable_streaming (bool): Enable streaming rendering (Rust only)
-                - enable_hot_reload (bool): Hot reload templates (Rust only)
-                
+
         Raises:
-            ImportError: If Jinja2 is not installed or Rust engine requested but unavailable
+            ImportError: If Jinja2 is not installed
             FileNotFoundError: If template_folder does not exist
-            
+
         Examples:
-            Auto-detection (recommended):
-            
-            >>> app.init_templates("templates")  # Uses Rust if available
-            
-            Force specific engine:
-            
-            >>> app.init_templates("templates", use_rust=True)   # Rust only
-            >>> app.init_templates("templates", use_rust=False)  # Jinja2 only
-            
-            With custom options:
-            
-            >>> app.init_templates(
-            ...     "templates",
-            ...     auto_reload=False,     # Disable file watching
-            ...     cache_size=1000,       # Larger cache
-            ...     enable_streaming=True  # Rust streaming (if available)
-            ... )
-            
-        Note:
-            Must be called before using :meth:`render_template`.
-            Rust engine provides 2-5x performance improvement over Jinja2.
-            
+            >>> app.init_templates("templates")
+            >>> app.init_templates("templates", auto_reload=False, cache_size=1000)
+
         See Also:
             :meth:`render_template`: Render templates
             :meth:`context_processor`: Add global template context
         """
-        
-        # Determine which engine to use
-        if use_rust is None:
-            use_rust = RUST_AVAILABLE  # Auto-detect
-        elif use_rust and not RUST_AVAILABLE:
-            self.logger.warning("Rust template engine requested but not available, falling back to Jinja2")
-            use_rust = False
-        
-        if use_rust and RUST_AVAILABLE:
-            # Initialize Rust template engine
-            self.template_engine = RustTemplateEngineWrapper(
-                template_folder, 
-                enable_streaming=kwargs.pop('enable_streaming', True),
-                enable_hot_reload=kwargs.pop('enable_hot_reload', True),
-                **kwargs
-            )
-            self.logger.info("🦀 Initialized Rust-powered template engine")
-        else:
-            # Initialize traditional Jinja2 engine
-            # Remove Rust-specific kwargs that TemplateEngine doesn't accept
-            kwargs.pop('enable_streaming', None)
-            kwargs.pop('enable_hot_reload', None)
-            self.template_engine = TemplateEngine(template_folder, **kwargs)
-            self.logger.info("📄 Initialized Jinja2 template engine")
+        self.template_engine = TemplateEngine(template_folder, **kwargs)
+        self.template_engine.add_global('url_for', self.url_for)
+        self.logger.info("📄 Initialized Jinja2 template engine")
     
     def task(self, name: str = None, category: str = "default"):
         """Decorator to register background task handlers with categorization.
@@ -399,6 +351,36 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             return func
         return decorator
     
+    def repeat(self, interval: float, name: str = None):
+        """Decorator to register a recurring background task.
+
+        The decorated async function will be called repeatedly with the given
+        interval (in seconds) between invocations. Tasks start on the first
+        request and are cancelled gracefully on shutdown.
+
+        Args:
+            interval: Seconds to wait between successive calls.
+            name: Optional label used in log messages (defaults to function name).
+
+        Example::
+
+            @app.repeat(30)
+            async def flush_cache():
+                await cache.flush()
+
+            @app.repeat(3600, name="hourly_sync")
+            async def sync_data():
+                await do_sync()
+        """
+        def decorator(func: Handler) -> Handler:
+            self._scheduled_tasks.append({
+                "func": func,
+                "interval": interval,
+                "name": name or func.__name__,
+            })
+            return func
+        return decorator
+
     def before_request(self, func: Handler) -> Handler:
         """Register a before-request handler that runs before each HTTP request.
 
@@ -665,96 +647,70 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             return func
         return decorator
     
-    async def render_template(self, template_name: str, stream: bool = False, **context) -> Response:
+    async def render_template(self, template_name: str, **context) -> Response:
         """Render template with context data and return HTTP response.
         
         Renders the specified template file with provided context variables,
-        returning a properly formatted HTTP response. Supports both traditional
-        rendering and progressive streaming for large datasets.
-        
+        returning a properly formatted HTTP response.
+
         Args:
             template_name: Name of template file relative to template folder.
                 Must include file extension (e.g., "page.html", "email.txt").
-            stream: Enable progressive rendering (Rust engine only):
-                - ``False``: Traditional rendering - template fully rendered before response
-                - ``True``: Streaming rendering - template chunks sent as generated
             **context: Template context variables passed to template.
                 Variables become available in template as ``{{ variable_name }}``.
-                
+
         Returns:
             Response: HTTP response with rendered HTML content.
-            StreamResponse: For streaming renders (when stream=True).
-            
+
         Raises:
             RuntimeError: If template engine not initialized with :meth:`init_templates`
             FileNotFoundError: If template file does not exist
             TemplateRenderError: If template rendering fails (syntax errors, missing variables)
-            
+
         Examples:
-            Basic template rendering:
-            
             >>> @app.get("/")
             >>> async def index(request):
-            ...     return await app.render_template("index.html", 
-            ...                                    title="Home Page",
-            ...                                    user_name="Alice")
-            
-            With complex context:
-            
-            >>> @app.get("/dashboard")  
-            >>> async def dashboard(request):
-            ...     users = await get_users()
-            ...     return await app.render_template("dashboard.html",
-            ...                                    users=users,
-            ...                                    page_title="Dashboard")
-            
-            Streaming large datasets (Rust only):
-            
-            >>> @app.get("/report")
-            >>> async def large_report(request):
-            ...     big_data = await get_large_dataset()
-            ...     return await app.render_template("report.html",
-            ...                                    stream=True,
-            ...                                    data=big_data)
-            
-        Note:
-            Context processors are automatically applied to provide global variables.
-            Streaming requires Rust template engine and compatible templates.
-            
+            ...     return await app.render_template("index.html", title="Home Page")
+
         See Also:
             :meth:`init_templates`: Initialize template system
-            :meth:`context_processor`: Add global template context  
-            :class:`gobstopper.http.Response`: Response objects
+            :meth:`context_processor`: Add global template context
         """
         if not self.template_engine:
             raise RuntimeError("Template engine not initialized. Call init_templates() first.")
-        
+
         # Apply context processors
         for processor in self.template_context_processors:
             if asyncio.iscoroutinefunction(processor):
                 context.update(await processor() or {})
             else:
                 context.update(processor() or {})
+
+        html = await self.template_engine.render_template_async(template_name, **context)
+        return Response(html, content_type='text/html')
+
+    async def render_string(self, content: str, **context) -> Response:
+        """Render template from string content with context data.
         
-        # Check if we're using the Rust template engine
-        if isinstance(self.template_engine, RustTemplateEngineWrapper):
-            # Use Rust template engine
-            result = await self.template_engine.render_template(template_name, context, stream=stream)
+        Args:
+            content: Template string content.
+            **context: Template context variables.
             
-            if stream and hasattr(result, '__aiter__'):
-                # Return streaming response for progressive rendering
-                async def generate_chunks():
-                    async for chunk in result:
-                        yield chunk
-                
-                return StreamResponse(generate_chunks(), content_type='text/html')
+        Returns:
+            Response: HTTP response with rendered HTML content.
+        """
+        if not self.template_engine:
+            raise RuntimeError("Template engine not initialized. Call init_templates() first.")
+
+        # Apply context processors
+        for processor in self.template_context_processors:
+            if asyncio.iscoroutinefunction(processor):
+                context.update(await processor() or {})
             else:
-                # Regular response
-                return Response(result, content_type='text/html')
-        else:
-            # Use traditional Jinja2 engine (ignore stream parameter)
-            html = await self.template_engine.render_template_async(template_name, **context)
-            return Response(html, content_type='text/html')
+                context.update(processor() or {})
+
+        result = await self.template_engine.render_string_async(content, **context)
+        return Response(result, content_type='text/html')
     
     async def add_background_task(self, name: str, category: str = "default",
                                  priority: TaskPriority = TaskPriority.NORMAL,
@@ -929,13 +885,46 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                         else:
                             handler()
                 
+                # Launch recurring scheduled tasks
+                for task_def in self._scheduled_tasks:
+                    t = asyncio.create_task(
+                        self._run_scheduled(task_def["func"], task_def["interval"], task_def["name"])
+                    )
+                    self._running_scheduled.append(t)
+
                 self._startup_complete = True
                 self.logger.debug("Application startup completed")
-                
+
+                # Register a SIGTERM handler so on_shutdown hooks run when
+                # Granian kills the worker process.
+                import signal as _signal
+
+                def _sigterm_handler(signum, frame):
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self.shutdown())
+
+                try:
+                    _signal.signal(_signal.SIGTERM, _sigterm_handler)
+                except (OSError, ValueError):
+                    pass  # Not the main thread — skip
+
             except Exception as e:
                 self.logger.error(f"Error during application startup: {e}", exc_info=True)
                 # Don't mark as complete so it will be retried
     
+    async def _run_scheduled(self, func, interval: float, name: str):
+        """Internal loop that calls *func* every *interval* seconds."""
+        self.logger.info(f"⏱️  Scheduled task '{name}' started (interval={interval}s)")
+        while True:
+            try:
+                await func()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception(f"Error in scheduled task '{name}'")
+            await asyncio.sleep(interval)
+
     def on_startup(self, func):
         """Decorator to register startup handlers that run once before first request.
 
@@ -1524,6 +1513,12 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 response = await self._apply_middleware(request, stack, final_handler)
                 await self._send_response(protocol, response, request=request)
                 
+            except RSGIProtocolClosed:
+                # Client disconnected, normal operation
+                if self.debug:
+                    self.logger.debug(f"Client disconnected: {request.path}")
+                return
+                
             except Exception as e:
                 # Fallback printing because loguru might fail to pickle some exceptions
                 print("!!! UNHANDLED EXCEPTION !!!", file=sys.stderr)
@@ -1833,6 +1828,14 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     hook()
                 except Exception:
                     self.logger.exception("Error in shutdown hook")
+        # Cancel recurring scheduled tasks
+        from contextlib import suppress
+        for t in self._running_scheduled:
+            t.cancel()
+        if self._running_scheduled:
+            await asyncio.gather(*self._running_scheduled, return_exceptions=True)
+        self._running_scheduled.clear()
+
         # Shutdown task queue last
         try:
             await self.task_queue.shutdown()

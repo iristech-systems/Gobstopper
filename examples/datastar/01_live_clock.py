@@ -8,7 +8,7 @@ The clock updates 10 times per second showing millisecond precision.
 import asyncio
 from datetime import datetime
 from gobstopper import Gobstopper
-from gobstopper.ext.datastar import Datastar, MergeMode
+from gobstopper.extensions.datastar import Datastar, MergeMode
 from gobstopper.middleware.security import SecurityMiddleware
 
 app = Gobstopper(name="live_clock", debug=True)
@@ -29,7 +29,7 @@ async def index(request):
     <html>
     <head>
         <title>Live Clock - Datastar Example</title>
-        <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"></script>
         <style>
             body {
                 font-family: 'Courier New', monospace;

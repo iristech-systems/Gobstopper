@@ -6,7 +6,7 @@ Search updates only after user stops typing for 300ms.
 """
 
 from gobstopper import Gobstopper
-from gobstopper.ext.datastar import Datastar, MergeMode
+from gobstopper.extensions.datastar import Datastar, MergeMode
 from gobstopper.middleware.security import SecurityMiddleware
 
 app = Gobstopper(name="debounced_search", debug=True)
@@ -39,7 +39,7 @@ async def index(request):
     <html>
     <head>
         <title>Debounced Search - Datastar Example</title>
-        <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"></script>
+        <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"></script>
         <style>
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

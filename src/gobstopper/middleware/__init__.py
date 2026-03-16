@@ -43,10 +43,12 @@ from .static import StaticFileMiddleware
 from .cors import CORSMiddleware
 from .security import SecurityMiddleware
 from .limits import LimitsMiddleware
+from .request_id import RequestIDMiddleware
 
 __all__ = [
     "StaticFileMiddleware",
-    "CORSMiddleware", 
+    "CORSMiddleware",
     "SecurityMiddleware",
     "LimitsMiddleware",
+    "RequestIDMiddleware",
 ]

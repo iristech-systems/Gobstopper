@@ -84,16 +84,18 @@ class Chart:
         - Template engine compatibility (Jinja2 and Tera)
     """
 
-    def __init__(self, chart: Any, chart_id: str | None = None):
+    def __init__(self, chart: Any, chart_id: str | None = None, attrs: dict[str, Any] | None = None):
         """
         Initialize a chart.
 
         Args:
             chart: The pyecharts chart object
             chart_id: Unique ID for the chart (generated if not provided)
+            attrs: Custom HTML attributes for the container div
         """
         self._chart = chart
         self._chart_id = chart_id or f"chart_{uuid.uuid4().hex[:8]}"
+        self._attrs = attrs or {}
         self._dependencies_loaded = False
 
     @property
@@ -115,6 +117,10 @@ class Chart:
         """Alias for render_embed() - works with Tera templates."""
         return self.render_embed()
 
+    def __html__(self) -> str:
+        """Standard __html__ protocol for seamless integration with HTML DSLs."""
+        return self.render_embed()
+
     @property
     def container(self) -> str:
         """Alias for render_container() - works with Tera templates."""
@@ -127,17 +133,15 @@ class Chart:
 
     def render_embed(self) -> str:
         """
-        Render chart as embeddable HTML (without <html> wrapper).
+        Render chart as embeddable HTML snippet.
 
         Returns:
             HTML string with chart container and initialization script
         """
         if not PYECHARTS_AVAILABLE:
-            return '<div style="color: red;">pyecharts not installed. Install with: pip install wopr[charts]</div>'
+            return '<div style="color: red;">pyecharts not installed.</div>'
 
-        # Get the chart HTML
-        html = self._chart.render_embed()
-        return html
+        return self.render_container() + self.render_script()
 
     def render_container(self) -> str:
         """
@@ -153,7 +157,22 @@ class Chart:
         width = getattr(self._chart, 'width', '100%')
         height = getattr(self._chart, 'height', '500px')
 
-        return f'<div id="{self._chart_id}" style="width: {width}; height: {height};"></div>'
+        # Combine default style with any custom styles
+        style = f"width: {width}; height: {height};"
+        if 'style' in self._attrs:
+            style = f"{style} {self._attrs.pop('style')}"
+
+        # Use gobstopper's own attribute stringifier for consistency
+        from gobstopper.html._attributes import attrs_string
+        
+        # Ensure ID is consistent
+        attrs = {
+            "id": self._chart_id,
+            "style": style,
+            **self._attrs
+        }
+        
+        return f'<div{attrs_string(attrs)}></div>'
 
     def render_script(self) -> str:
         """
@@ -165,8 +184,8 @@ class Chart:
         if not PYECHARTS_AVAILABLE:
             return ''
 
-        # Get chart options as JSON
-        options = self._chart.get_options()
+        # Get chart options as serialized JSON string
+        options_json = self._chart.dump_options_with_quotes()
 
         script = f"""
 <script type="text/javascript">
@@ -177,7 +196,7 @@ class Chart:
             return;
         }}
         var chart = echarts.init(chartDom);
-        var option = {options};
+        var option = {options_json};
         chart.setOption(option);
 
         // Responsive resize
@@ -191,7 +210,7 @@ class Chart:
 
     def to_json(self) -> dict:
         """
-        Export chart options as JSON.
+        Export chart options as dictionary.
 
         Returns:
             Chart configuration as dictionary
@@ -199,6 +218,17 @@ class Chart:
         if not PYECHARTS_AVAILABLE:
             return {}
         return self._chart.get_options()
+
+    def dump_options(self) -> str:
+        """
+        Export chart options as serialized JSON string.
+
+        Returns:
+            JSON string of chart options
+        """
+        if not PYECHARTS_AVAILABLE:
+            return '{}'
+        return self._chart.dump_options_with_quotes()
 
     def render_notebook(self) -> str:
         """
@@ -239,7 +269,7 @@ class ChartBuilder(ABC):
         chart builder classes like LineChart, BarChart, etc.
     """
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
         """
         Initialize chart builder.
 
@@ -247,6 +277,7 @@ class ChartBuilder(ABC):
             width: Chart width (e.g., '800px', '100%')
             height: Chart height (e.g., '500px', '400px')
             theme: Theme name
+            **kwargs: Custom HTML attributes for the chart container
         """
         if not PYECHARTS_AVAILABLE:
             raise ImportError(
@@ -257,7 +288,12 @@ class ChartBuilder(ABC):
         self._width = width
         self._height = height
         self._theme = theme
-        self._chart_id = f"chart_{uuid.uuid4().hex[:8]}"
+        
+        from gobstopper.html._elements import _python_to_html_name
+        
+        # Use provided ID if available, otherwise generate one
+        self._chart_id = kwargs.pop('id', None) or f"chart_{uuid.uuid4().hex[:8]}"
+        self._kwargs = {_python_to_html_name(k): v for k, v in kwargs.items()}
         self._title: str | None = None
         self._subtitle: str | None = None
         self._legend_opts: dict[str, Any] | None = None
@@ -362,14 +398,14 @@ class ChartBuilder(ABC):
         """
         chart = self._create_chart()
         chart = self._apply_common_options(chart)
-        return Chart(chart, self._chart_id)
+        return Chart(chart, self._chart_id, attrs=self._kwargs)
 
 
 class LineChart(ChartBuilder):
     """Builder for line charts."""
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._xaxis_data: list = []
         self._series: list[dict[str, Any]] = []
         self._is_smooth = False
@@ -474,8 +510,8 @@ class LineChart(ChartBuilder):
 class BarChart(ChartBuilder):
     """Builder for bar charts."""
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._xaxis_data: list = []
         self._series: list[dict[str, Any]] = []
         self._stack: str | None = None
@@ -554,8 +590,8 @@ class BarChart(ChartBuilder):
 class PieChart(ChartBuilder):
     """Builder for pie charts."""
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._data: list[tuple[str, float]] = []
         self._radius: str | list = '60%'
         self._rosetype: str | None = None
@@ -623,8 +659,8 @@ class PieChart(ChartBuilder):
 class ScatterChart(ChartBuilder):
     """Builder for scatter plots."""
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._xaxis_data: list = []
         self._series: list[dict[str, Any]] = []
 
@@ -689,8 +725,8 @@ class ScatterChart(ChartBuilder):
 class CandlestickChart(ChartBuilder):
     """Builder for candlestick (K-line) charts - commonly used for stock data."""
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._xaxis_data: list = []
         self._yaxis_data: list = []  # List of [open, close, low, high]
 
@@ -752,8 +788,8 @@ class TimelineChart(ChartBuilder):
     navigated through a timeline slider.
     """
 
-    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest'):
-        super().__init__(width, height, theme)
+    def __init__(self, width: str = '100%', height: str = '500px', theme: str = 'tempest', **kwargs):
+        super().__init__(width, height, theme, **kwargs)
         self._charts: dict[str, Any] = {}  # Timeline label -> Chart mapping
         
     def add_chart(self, time_label: str, chart: Any) -> Self:

@@ -1,3 +1,77 @@
+"""gobstopper.html — type-safe HTML DSL (vendored htpy)
+=====================================================
+
+Every HTML element is a module-level name.  **Wildcard imports shadow Python
+built-ins and common loop variable names** with no warning:
+
+.. code-block:: python
+
+    from gobstopper.html import *   # ← HAZARDOUS
+
+    # Built-ins now shadowed silently:
+    #   input  → VoidElement("input")   (was Python's built-in input())
+    #   map    → Element("map")          (was Python's built-in map())
+    #   object → Element("object")       (was Python's built-in object)
+    #   id     is NOT exported (no collision, but watch for future changes)
+
+    # Common one-letter loop variables now shadowed:
+    #   p      → Element("p")   — clashes with  for p in partners: …
+    #   a      → Element("a")   — clashes with  for a in articles: …
+    #   b      → Element("b")   — clashes with  for b in batches:  …
+    #   s      → Element("s")   — clashes with  for s in strings:  …
+    #   i      → Element("i")   — clashes with  for i in range(n): …
+    #   q      → Element("q")   — clashes with  q = request.get_str("q")
+
+**Recommended import patterns** (safest → least safe):
+
+1. **Namespace import** — zero collision risk::
+
+       from gobstopper import html
+       html.div(class_="card")[html.p["Hello"]]
+
+2. **Named imports** — explicit, no surprises::
+
+       from gobstopper.html import div, span, ul, li, a, p
+
+3. **Wildcard import** — only safe in dedicated rendering modules that contain
+   no other logic and no loop variables named after HTML elements.
+
+Hazardous names reference
+-------------------------
+The following names exported by this module conflict with Python built-ins:
+
+==========  ================  =======================================
+Name        html type         Python built-in it shadows
+==========  ================  =======================================
+``input``   VoidElement       ``builtins.input()``
+``map``     Element           ``builtins.map()``
+``object``  Element           ``builtins.object``
+``data``    Element           no built-in, but very common variable
+``output``  Element           no built-in, but common variable name
+``time``    Element           shadows ``import time`` if in scope
+``title``   Element           common variable name
+``var``     Element           shadows ``var`` as short for "variable"
+==========  ================  =======================================
+
+One-letter element names that shadow loop variables: ``a``, ``b``, ``i``,
+``p``, ``q``, ``s``, ``u``.
+
+Full element reference
+----------------------
+Void elements (no closing tag): area, base, br, col, embed, hr, img,
+**input**, link, meta, source, track, wbr.
+
+Normal elements: a, abbr, address, article, aside, audio, b, bdi, bdo,
+blockquote, body, button, canvas, caption, cite, code, colgroup, **data**,
+datalist, dd, del\\_, details, dfn, dialog, div, dl, dt, em, fieldset,
+figcaption, figure, footer, form, h1–h6, head, header, hgroup, html, i,
+iframe, ins, kbd, label, legend, li, main, **map**, mark, math, menu, meter,
+nav, noscript, **object**, ol, optgroup, option, **output**, p, picture, pre,
+progress, q, rp, rt, ruby, s, samp, script, search, section, select, slot,
+small, span, strong, style, sub, summary, sup, svg, table, tbody, td,
+template, textarea, tfoot, th, thead, **time**, **title**, tr, u, ul, **var**,
+video.
+"""
 from __future__ import annotations
 
 from ._contexts import Context as Context

@@ -51,6 +51,30 @@ class TokenBucketLimiter:
             return False
 
 
+_PERIOD_SECONDS = {"second": 1, "minute": 60, "hour": 3600}
+
+
+def _parse_rate_limit(spec: str) -> TokenBucketLimiter:
+    """Parse a ``"N/period"`` string into a :class:`TokenBucketLimiter`.
+
+    Period may be ``second``, ``minute``, or ``hour``::
+
+        _parse_rate_limit("20/minute")   # 20 rq/min, burst 20
+        _parse_rate_limit("1/second")    # 1 rq/sec, burst 1
+        _parse_rate_limit("500/hour")    # ~0.139 rq/sec, burst 500
+    """
+    try:
+        n_str, period = spec.split("/", 1)
+        n = int(n_str.strip())
+        seconds = _PERIOD_SECONDS[period.strip().lower()]
+    except (ValueError, KeyError):
+        raise ValueError(
+            f"Invalid rate limit spec {spec!r}. "
+            "Expected 'N/period' where period is second, minute, or hour."
+        )
+    return TokenBucketLimiter(rate=n / seconds, capacity=n)
+
+
 def rate_limit(limiter: TokenBucketLimiter, key: Optional[Callable[[Any], str]] = None, cost: float = 1.0):
     """
     Middleware decorator factory to enforce rate limits.

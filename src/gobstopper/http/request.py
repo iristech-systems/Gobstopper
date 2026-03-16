@@ -303,7 +303,37 @@ class Request:
             # Skip parsing empty query strings for performance
             self._args = parse_qs(qs) if qs else {}
         return self._args
-    
+
+    def get_str(self, key: str, default: str = "") -> str:
+        """Get a query-string parameter always as a plain string.
+
+        ``request.args`` returns every value as a ``List[str]`` to handle
+        repeated parameters correctly.  In the common case of a single value
+        that boilerplate—``request.args.get("q", [""])[0]``—is tedious and
+        error-prone when the field is submitted as a list.
+
+        ``get_str`` normalises both cases: if the value is a list it takes the
+        first element; if it is already a string (or the key is absent) it
+        returns the string or *default*.
+
+        Args:
+            key: Query-string parameter name.
+            default: Value to return when the key is absent (default: ``""``).
+
+        Returns:
+            The parameter value as a plain string.
+
+        Examples:
+            >>> # URL: /search?q=python&page=2
+            >>> query = request.get_str("q")          # "python"
+            >>> page  = request.get_str("page", "1")  # "2"
+            >>> missing = request.get_str("sort")     # ""
+        """
+        val = self.args.get(key, default)
+        if isinstance(val, list):
+            return val[0] if val else default
+        return val if val is not None else default
+
     @property
     def headers(self) -> dict[str, str]:
         """Get HTTP request headers with case-insensitive access.

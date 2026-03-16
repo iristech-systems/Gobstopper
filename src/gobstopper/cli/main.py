@@ -8,6 +8,9 @@ import shutil
 import platform
 import subprocess
 import json
+import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from .sdk import sdk
@@ -18,6 +21,19 @@ try:
 except ImportError:
     CLICK_AVAILABLE = False
     click = None
+
+
+def get_granian_version() -> Optional[str]:
+    """Get the version of the installed Granian package."""
+    try:
+        import importlib.metadata
+        return importlib.metadata.version("granian")
+    except Exception:
+        try:
+            import pkg_resources
+            return pkg_resources.get_distribution("granian").version
+        except Exception:
+            return None
 
 
 def load_config_file(config_name: str) -> Dict[str, Any]:
@@ -333,14 +349,26 @@ else:
     @click.option('--config', '-c', default=None, help='Configuration file name (without extension)')
     @click.option('--ssl-cert', default=None, help='Path to SSL certificate file')
     @click.option('--ssl-key', default=None, help='Path to SSL key file')
-    @click.option('--loop', default=None, type=click.Choice(['auto', 'asyncio', 'uvloop']), help='Event loop implementation')
+    @click.option('--loop', default=None, type=click.Choice(['auto', 'asyncio', 'uvloop', 'winloop']), help='Event loop implementation')
     @click.option('--log-level', default=None, type=click.Choice(['debug', 'info', 'warning', 'error', 'critical']), help='Log level')
     @click.option('--access-log/--no-access-log', default=None, help='Enable/disable access log')
     @click.option('--share', is_flag=True, help='Enable Flash Preview (share via local network/QR)')
+    @click.option('--metrics/--no-metrics', default=None, help='Enable Prometheus metrics exporter')
+    @click.option('--metrics-port', type=int, default=9090, help='Metrics exporter port')
+    @click.option('--backpressure', type=int, default=None, help='Maximum concurrent requests per worker')
+    @click.option('--max-rss', type=int, default=None, help='Maximum memory (MiB) before worker respawn')
+    @click.option('--lifetime', default=None, help='Maximum worker lifetime (e.g., "1h", "24h")')
+    @click.option('--uds', default=None, help='Unix Domain Socket path')
+    @click.option('--env-file', default=None, type=click.Path(exists=True), help='Environment file to load')
+    @click.option('--dev', '-d', is_flag=True, help='Enable Development Mode (implies reload, metrics, debug log)')
     def run(app: str, host: Optional[str], port: Optional[int], workers: Optional[int],
             reload: bool, threads: Optional[int], config: Optional[str],
             ssl_cert: Optional[str], ssl_key: Optional[str], loop: Optional[str],
-            log_level: Optional[str], access_log: Optional[bool], share: bool):
+            log_level: Optional[str], access_log: Optional[bool], share: bool,
+            metrics: Optional[bool], metrics_port: int, backpressure: Optional[int],
+            max_rss: Optional[int], lifetime: Optional[str],
+            uds: Optional[str], env_file: Optional[str],
+            dev: bool):
         """Run Gobstopper application with Granian server (Flask-like interface)
 
         Example:
@@ -355,13 +383,34 @@ else:
             if config_data:
                 click.echo(f"📄 Loaded configuration from: {config}.json/toml")
 
+        # --dev implies these if not explicitly set
+        if dev:
+            if reload is None: reload = True
+            if metrics is None: metrics = True
+            if log_level is None: log_level = 'debug'
+            # For dev, we still prioritize config/CLI workers but default to 1 if unset
+            if workers is None: workers = 1
+            click.echo("🛠️  Development mode active: Enabling hot-reload, debug logs, and metrics.")
+
+        if reload is None:
+            reload = config_data.get('reload', False)
+            
         # Merge config with CLI args (CLI args take precedence)
         # Server settings
         host = host or config_data.get('host', '127.0.0.1')
         port = port or config_data.get('port', 8000)
-        workers = workers or config_data.get('workers', 1)
+        
+        # Smart Workers Default: 1 for reload/dev, CPU count for production
+        if workers is None:
+            workers = config_data.get('workers')
+            if workers is None:
+                if reload:
+                    workers = 1
+                else:
+                    workers = os.cpu_count() or 1
+        
         threads = threads or config_data.get('threads', 1)
-        loop = loop or config_data.get('loop', 'uvloop')
+        loop = loop or config_data.get('loop', 'auto')
         
         # Logging
         log_level = log_level or config_data.get('log_level', 'info')
@@ -371,17 +420,55 @@ else:
         # SSL
         ssl_cert = ssl_cert or config_data.get('ssl_cert')
         ssl_key = ssl_key or config_data.get('ssl_key')
+        
+        # Metrics and Tuning
+        if metrics is None:
+            metrics = config_data.get('metrics', False)
+        
+        # "Grade A" Defaults: 200 backpressure and 1024MB RSS limit
+        if backpressure is None:
+            backpressure = config_data.get('backpressure', 200)
+            
+        if max_rss is None:
+            max_rss = config_data.get('max_rss', 1024)
+            
+        lifetime = lifetime or config_data.get('lifetime')
+        uds = uds or config_data.get('uds')
+        env_file = env_file or config_data.get('env_file')
 
         # FLASH PREVIEW: Force binding if sharing
         if share and host in ('127.0.0.1', 'localhost'):
             host = '0.0.0.0'
 
-        if not reload:
-            reload = config_data.get('reload', False)
-
         # Allow config to override app if not specified on CLI
         if app == 'app:app' and 'app' in config_data:
             app = config_data['app']
+
+        # Architecture-aware loop selection
+        is_windows = platform.system() == 'Windows'
+        if loop in (None, 'auto'):
+            if is_windows:
+                loop = 'winloop'
+                click.echo("🪟 Detected Windows environment, using winloop for best performance.")
+            else:
+                loop = 'uvloop'
+                click.echo("🐧 Detected Linux/Unix environment, using uvloop.")
+
+        # Dependency check for loop
+        if loop == 'uvloop':
+            try:
+                import uvloop
+            except ImportError:
+                click.echo("⚠️  uvloop is not installed. Falling back to asyncio.", err=True)
+                click.echo("💡 Tip: run 'uv add uvloop' for better performance.")
+                loop = 'asyncio'
+        elif loop == 'winloop':
+            try:
+                import winloop
+            except ImportError:
+                click.echo("⚠️  winloop is not installed. Falling back to asyncio.", err=True)
+                click.echo("💡 Tip: run 'uv add winloop' for better performance on Windows.")
+                loop = 'asyncio'
 
         # Detect platform and set runtime mode
         machine = platform.machine().lower()
@@ -411,6 +498,39 @@ else:
             '--runtime-mode', runtime_mode,
         ]
 
+        # Apply enhancements
+        if metrics:
+            g_ver = get_granian_version()
+            # Robust version comparison using tuples
+            def v_tuple(v): return tuple(map(int, (v.split('.') + ['0','0'])[:3]))
+            
+            if g_ver and v_tuple(g_ver) < v_tuple("2.7.0"):
+                click.echo(f"⚠️  Metrics requires Granian 2.7.0+, but {g_ver} is installed. Disabling metrics.")
+                metrics = False
+            else:
+                cmd.extend(['--metrics', '--metrics-port', str(metrics_port)])
+        
+        if backpressure:
+            cmd.extend(['--backpressure', str(backpressure)])
+        
+        if max_rss:
+            cmd.extend(['--workers-max-rss', str(max_rss)])
+        
+        if lifetime:
+            cmd.extend(['--workers-lifetime', lifetime])
+            
+        if uds:
+            cmd.extend(['--uds', uds])
+            
+        if env_file:
+            cmd.extend(['--env-files', env_file])
+
+        # AUTO-STATIC: Native Granian static serving
+        static_dir = Path("static")
+        if static_dir.exists() and static_dir.is_dir():
+            cmd.extend(['--static-path-mount', 'static', '--static-path-route', '/static'])
+            click.echo("⚡ Native Static Serving enabled: /static -> static/")
+
         if access_log:
             cmd.append('--access-log')
         else:
@@ -421,6 +541,13 @@ else:
             scheme = "https"
         else:
             scheme = "http"
+
+        # Pass metrics configuration to the app via environment variables
+        if metrics:
+            os.environ["GOBSTOPPER_METRICS_ENABLED"] = "1"
+            os.environ["GOBSTOPPER_METRICS_PORT"] = str(metrics_port)
+        else:
+            os.environ["GOBSTOPPER_METRICS_ENABLED"] = "0"
 
         if reload:
             cmd.append('--reload')
@@ -434,9 +561,6 @@ else:
             extra_watch = config_data.get('reload_paths', [])
             reload_paths.extend(extra_watch)
             
-            if reload_paths:
-                # Deduplicate
-                reload_paths = list(set(reload_paths))
             if reload_paths:
                 # Deduplicate
                 reload_paths = list(set(reload_paths))
@@ -461,30 +585,85 @@ else:
             else:
                 click.echo("⚠️  Could not detect local IP for Flash Preview", err=True)
 
-        # Display startup info
-        click.echo(f"🚀 Starting Gobstopper application: {app}")
-        click.echo(f"📍 Server: {scheme}://{host}:{port}")
         if share_url:
              click.echo(f"📡 Shared: {share_url}")
         click.echo(f"👷 Workers: {workers}")
         click.echo(f"🧵 Threads: {threads}")
+        click.echo(f"🧱 Backpressure: {backpressure}")
+        click.echo(f"🛡️  Max RSS: {max_rss}MB")
         click.echo(f"⚙️  Runtime: {runtime_mode}")
         click.echo(f"🔄 Loop: {loop}")
         if reload:
             click.echo(f"🔄 Auto-reload: enabled")
+        click.echo(f"🛡️  Respawn on fail: enabled")
+        if metrics:
+            click.echo(f"📊 Metrics: enabled (port {metrics_port})")
+        else:
+            click.echo(f"📊 Metrics: disabled")
         click.echo(f"\n💡 Press Ctrl+C to stop\n")
 
+        # Check if port is available
+        if is_port_in_use(host, port):
+            click.echo(f"❌ Error: Port {port} is already in use on {host}.", err=True)
+            sys.exit(1)
+
         # Run granian
+        proc = None
         try:
-            subprocess.run(cmd, check=True)
+            proc = subprocess.Popen(cmd)
+
+            # Self-ping the health endpoint to trigger @app.on_startup handlers
+            # before any real user traffic arrives. Skip if UDS is in use (no TCP port).
+            if not uds:
+                ping_host = '127.0.0.1' if host in ('0.0.0.0', '::') else host
+                scheme = 'https' if ssl_cert and ssl_key else 'http'
+                health_url = f"{scheme}://{ping_host}:{port}/health"
+                timeout = int(os.getenv("GOBSTOPPER_STARTUP_TIMEOUT", "30"))
+
+                click.echo(f"⏳ Waiting for startup…")
+                startup_ok = False
+                deadline = time.monotonic() + timeout
+
+                while time.monotonic() < deadline:
+                    # Bail out early if Granian died
+                    if proc.poll() is not None:
+                        click.echo(f"❌ Granian exited during startup (code {proc.returncode})", err=True)
+                        sys.exit(proc.returncode or 1)
+
+                    try:
+                        with urllib.request.urlopen(health_url, timeout=2) as resp:
+                            if resp.status == 200:
+                                startup_ok = True
+                                break
+                    except Exception:
+                        pass
+
+                    time.sleep(0.25)
+
+                if startup_ok:
+                    click.echo(f"✅ Startup complete — app is ready")
+                else:
+                    click.echo(
+                        f"⚠️  Startup health check timed out after {timeout}s.\n"
+                        f"   Your @on_startup handlers may still be running, or the app\n"
+                        f"   failed to bind. Check the logs above for errors.",
+                        err=True,
+                    )
+
+            proc.wait()
+
         except KeyboardInterrupt:
             click.echo("\n\n👋 Shutting down gracefully...")
+            if proc and proc.poll() is None:
+                proc.terminate()
+                shutdown_timeout = int(os.getenv("WOPR_SHUTDOWN_TIMEOUT", "10")) + 3
+                try:
+                    proc.wait(timeout=shutdown_timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         except FileNotFoundError:
             click.echo("❌ Error: granian not found. Install with: uv add granian", err=True)
             sys.exit(1)
-        except subprocess.CalledProcessError as e:
-            click.echo(f"❌ Error running granian: {e}", err=True)
-            sys.exit(e.returncode)
 
     @cli.command()
     def version():
@@ -509,6 +688,7 @@ def detect_local_ip() -> Optional[str]:
     except Exception:
         return None
 
+
 def print_qr_code(data: str):
     """Print a simple ASCII QR code to stdout"""
     try:
@@ -521,6 +701,13 @@ def print_qr_code(data: str):
         # Fallback to simple banner if qrcode lib is missing
         click.echo(f"   (Install 'qrcode' for real QR: pip install qrcode)")
         click.echo(f"   [ {data} ]")
+
+
+def is_port_in_use(host: str, port: int) -> bool:
+    """Check if a port is in use"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex((host, port)) == 0
 
 
 

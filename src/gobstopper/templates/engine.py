@@ -17,6 +17,16 @@ except ImportError:
     jinja2 = None
 
 
+class TemplateRenderError(Exception):
+    """Exception raised when template rendering fails with structured information."""
+    def __init__(self, message, template_name=None, line=None, column=None):
+        super().__init__(message)
+        self.message = message
+        self.template_name = template_name
+        self.line = line
+        self.column = column
+
+
 class TemplateEngine:
     """Jinja2-based template engine with async support"""
     
@@ -90,6 +100,17 @@ class TemplateEngine:
             return await template.render_async(**context)
         except jinja2.TemplateNotFound:
             raise FileNotFoundError(f"Template '{template_name}' not found")
+        except (jinja2.TemplateSyntaxError, jinja2.UndefinedError, jinja2.TemplateError) as e:
+            raise TemplateRenderError(
+                message=str(e),
+                template_name=getattr(e, 'filename', template_name) or template_name,
+                line=getattr(e, 'lineno', None),
+            ) from e
+            
+    async def render_string_async(self, content: str, **context) -> str:
+        """Render template from string content asynchronously"""
+        template = self.env.from_string(content)
+        return await template.render_async(**context)
     
     def add_filter(self, name: str, func):
         """Add a custom filter"""

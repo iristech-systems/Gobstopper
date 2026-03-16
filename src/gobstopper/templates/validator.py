@@ -22,11 +22,7 @@ except ImportError:
     HAS_JINJA2 = False
     JinjaTemplateSyntaxError = Exception
 
-try:
-    from gobstopper._core import RustTemplateEngine
-    HAS_RUST_ENGINE = True
-except ImportError:
-    HAS_RUST_ENGINE = False
+HAS_RUST_ENGINE = False
 
 
 class TemplateEngine(Enum):
@@ -71,17 +67,10 @@ class TemplateValidator:
         """Initialize the validator with optional logger"""
         self.logger = logger
         self.jinja_env = None
-        self.rust_engine = None
-        
-        # Initialize template engines if available
+
         if HAS_JINJA2:
             self.jinja_env = Environment()
-            
-        if HAS_RUST_ENGINE:
-            try:
-                self.rust_engine = RustTemplateEngine(".", enable_streaming=False)
-            except Exception:
-                pass
+
     
     def log(self, level: str, message: str, **kwargs):
         """Log a message if logger is available"""
@@ -251,22 +240,7 @@ class TemplateValidator:
         # Check for Tera syntax patterns and compatibility
         issues.extend(self._check_tera_patterns(content))
         
-        # Try to compile with Rust engine if available
-        if HAS_RUST_ENGINE and self.rust_engine:
-            try:
-                # Create a temporary template for validation
-                temp_name = f"validation_temp_{hash(content) % 10000}"
-                # Note: In real implementation, you'd use the Rust engine's validation methods
-                # For now, we'll use pattern-based validation
-                pass
-            except Exception as e:
-                issues.append(ValidationIssue(
-                    ValidationLevel.ERROR,
-                    f"Tera compilation error: {e}"
-                ))
-                syntax_score = 0.0
-        
-        # Calculate performance score  
+        # Calculate performance score
         performance_score = self._calculate_performance_score(content, TemplateEngine.TERA)
         
         # Adjust syntax score based on issues

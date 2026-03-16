@@ -300,6 +300,26 @@ class SecurityMiddleware:
                 log.info("Datastar mode enabled: COEP/COOP disabled, CSP configured for Datastar")
             log.debug(f"Final CSP policy: {csp_policy}")
 
+            # ── Tailwind CDN / JIT warning ───────────────────────────────────
+            # Tailwind's CDN Play / JIT build scans the *initial* HTML document
+            # to generate its stylesheet.  CSS classes that appear *only* in
+            # SSE-injected fragments (never in the first render) are never
+            # scanned and will be silently unstyled in the browser — no error
+            # is raised, the element just looks wrong.
+            #
+            # Workarounds:
+            #   1. Use a full Tailwind build pipeline (recommended for prod).
+            #   2. Ensure every dynamic class appears at least once in the
+            #      initial HTML response (e.g. in a hidden <div> or an HTML
+            #      comment stripped server-side).
+            #   3. Use a safelist in tailwind.config.js.
+            log.warning(
+                "⚠️  Datastar + Tailwind CDN/JIT: CSS classes that appear only in "
+                "SSE-injected fragments are silently unstyled because Tailwind scans "
+                "the initial HTML document only.  Use a full Tailwind build pipeline, "
+                "or pre-render every dynamic class somewhere in the first response."
+            )
+
         # Header configurations
         self.hsts_policy = f"max-age={hsts_max_age}"
         if hsts_include_subdomains:

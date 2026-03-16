@@ -9,6 +9,8 @@ from gobstopper.html import html, head, body, div, style, script, meta, h1, h2, 
 from gobstopper.html import datastar
 from gobstopper.http import Request, Response
 
+from gobstopper.templates.engine import TemplateRenderError
+
 class PrismErrorPage:
     """Renders a rich error page for unhandled exceptions."""
     
@@ -18,6 +20,21 @@ class PrismErrorPage:
         self.exc_type = type(exception).__name__
         self.exc_value = str(exception)
         self.traceback_obj = traceback.extract_tb(exception.__traceback__)
+        
+        # Check for template rendering errors (structured info from Rust/Tera)
+        self.template_error_info = None
+        if TemplateRenderError and isinstance(exception, TemplateRenderError):
+            template_name = getattr(exception, 'template_name', None)
+            line = getattr(exception, 'line', None)
+            if template_name and line:
+                snippet = self._get_template_snippet(template_name, line)
+                if snippet:
+                    self.template_error_info = {
+                        'filename': template_name,
+                        'line': line,
+                        'snippet': snippet,
+                        'column': getattr(exception, 'column', None)
+                    }
 
     def __html__(self) -> str:
         return str(html(lang="en")[
@@ -35,6 +52,7 @@ class PrismErrorPage:
                             self._request_info(),
                         ],
                         div(class_="prism-main")[
+                            self._template_error(),
                             self._stack_trace(),
                         ]
                     ]
@@ -48,6 +66,22 @@ class PrismErrorPage:
             div(class_="prism-title")[
                 h1[self.exc_type],
                 div(class_="prism-message")[self.exc_value]
+            ]
+        ]
+
+    def _template_error(self):
+        if not self.template_error_info:
+            return ""
+            
+        info = self.template_error_info
+        return div(class_="template-error")[
+            h2[f"Template Error in {info['filename']}"],
+            div(class_="frame frame-app")[
+                div(class_="frame-header")[
+                    span(class_="frame-func")["Jinja2 Template Engine"],
+                    span(class_="frame-file")[f"{info['filename']}:{info['line']}"]
+                ],
+                pre(class_="frame-code")[code[info['snippet']]]
             ]
         ]
 
@@ -105,6 +139,39 @@ class PrismErrorPage:
             ]
         ]
 
+    def _get_template_snippet(self, filename: str, line: int):
+        """Try to find the template file and extract a code snippet."""
+        # Common locations for templates
+        search_dirs = [Path("templates"), Path("examples/templates"), Path(".")]
+        
+        file_path = None
+        for d in search_dirs:
+            p = d / filename
+            if p.exists():
+                file_path = p
+                break
+                
+        if not file_path and "/" in filename:
+            # Try absolute path or direct path
+            p = Path(filename)
+            if p.exists():
+                file_path = p
+        
+        if not file_path:
+            return ""
+            
+        try:
+            lines = file_path.read_text().splitlines()
+            start = max(0, line - 3)
+            end = min(len(lines), line + 2)
+            return "\n".join([
+                f"{i+1:4} | {l}" + ("  <-- ERROR" if i+1 == line else "")
+                for i, l in enumerate(lines)
+                if start <= i < end
+            ])
+        except Exception:
+            return ""
+
     def _css(self):
         return """
         :root {
@@ -128,7 +195,10 @@ class PrismErrorPage:
             padding: 4px 12px; border-radius: 4px; font-size: 14px; 
         }
         .prism-title h1 { margin: 0 0 8px 0; font-size: 24px; color: var(--primary); }
-        .prism-message { font-family: monospace; font-size: 16px; color: var(--text-dim); }
+        .prism-message { 
+            font-family: monospace; font-size: 16px; color: var(--text-dim); 
+            white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+        }
 
         .prism-container { flex: 1; display: flex; overflow: hidden; }
         
@@ -138,7 +208,9 @@ class PrismErrorPage:
         }
         .prism-main { flex: 1; padding: 30px; overflow-y: auto; }
 
-        h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+        h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
+        .template-error { margin-bottom: 30px; }
+        .template-error h2 { color: var(--primary); }
         
         .label { display: inline-block; width: 60px; color: var(--text-dim); }
         ul { list-style: none; padding: 0; }

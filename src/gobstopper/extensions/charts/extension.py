@@ -105,6 +105,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> LineChart:
         """
         Create a line chart builder.
@@ -113,6 +114,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             LineChart builder for chaining
@@ -121,6 +123,7 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )
 
     def bar(
@@ -128,6 +131,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> BarChart:
         """
         Create a bar chart builder.
@@ -136,6 +140,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             BarChart builder for chaining
@@ -144,6 +149,7 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )
 
     def pie(
@@ -151,6 +157,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> PieChart:
         """
         Create a pie chart builder.
@@ -159,6 +166,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             PieChart builder for chaining
@@ -167,6 +175,7 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )
 
     def scatter(
@@ -174,6 +183,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> ScatterChart:
         """
         Create a scatter plot builder.
@@ -182,6 +192,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             ScatterChart builder for chaining
@@ -190,6 +201,7 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )
 
     def get_cdn_url(self) -> str:
@@ -212,6 +224,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> 'CandlestickChart':
         """
         Create a candlestick (K-line) chart builder.
@@ -220,6 +233,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             CandlestickChart builder for chaining
@@ -229,6 +243,7 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )
 
     def timeline(
@@ -236,6 +251,7 @@ class ChartExtension:
         width: str | None = None,
         height: str | None = None,
         theme: ChartTheme | None = None,
+        **kwargs: Any,
     ) -> 'TimelineChart':
         """
         Create a timeline chart builder.
@@ -246,6 +262,7 @@ class ChartExtension:
             width: Chart width (defaults to extension default)
             height: Chart height (defaults to extension default)
             theme: Chart theme (defaults to extension default)
+            **kwargs: Custom HTML attributes for the chart container
 
         Returns:
             TimelineChart builder for chaining
@@ -255,4 +272,5 @@ class ChartExtension:
             width=width or self.default_width,
             height=height or self.default_height,
             theme=theme or self.default_theme,
+            **kwargs,
         )

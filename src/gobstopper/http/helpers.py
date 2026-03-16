@@ -42,6 +42,49 @@ from .response import JSONResponse, FileResponse, StreamResponse, Response
 from .errors import HTTPException
 
 
+def get_str(mapping: dict[str, "str | list[str]"], key: str, default: str = "") -> str:
+    """Get a value from a ``dict[str, list[str]]`` always as a plain string.
+
+    Both ``request.args`` and ``await request.form()`` return every field as a
+    list to support repeated keys (e.g. checkboxes).  Accessing a single-value
+    field then requires ``mapping.get("key", [""])[0]``, which is verbose and
+    breaks when the field is missing.
+
+    ``get_str`` normalises both cases transparently.
+
+    Args:
+        mapping: A ``dict[str, list[str]]`` such as ``request.args`` or an
+            ``await``ed ``request.form()``.
+        key: The field name to look up.
+        default: Fallback when the key is absent or the list is empty
+            (default: ``""``).
+
+    Returns:
+        The value as a plain string.
+
+    Examples:
+        Query-string parameter::
+
+            query = get_str(request.args, "q")
+            page  = get_str(request.args, "page", "1")
+
+        Form field::
+
+            form = await request.form()
+            name  = get_str(form, "name")
+            email = get_str(form, "email")
+
+    See Also:
+        :meth:`Request.get_str`: Equivalent shorthand directly on the request
+            object for query-string parameters.
+        :func:`flatten_form_data`: Flatten an entire form dict at once.
+    """
+    val = mapping.get(key, default)
+    if isinstance(val, list):
+        return val[0] if val else default
+    return val if val is not None else default
+
+
 def flatten_form_data(form_data: dict[str, list[str]]) -> dict[str, str | list[str]]:
     """Convert form data with single-value lists to plain strings.
 
@@ -438,24 +481,11 @@ def stream_template(template_generator: Callable[[], Awaitable]) -> StreamRespon
         ...         yield "</body></html>"
         ...     return stream_template(render)
 
-        Stream with Rust template engine:
-
-        >>> @app.get("/dashboard")
-        >>> async def dashboard(request):
-        ...     # Rust engine automatically provides streaming
-        ...     async def render():
-        ...         data = await get_dashboard_data()
-        ...         async for chunk in app.rust_engine.render_stream("dashboard.html", data):
-        ...             yield chunk
-        ...     return stream_template(render)
-
     Note:
         Automatically sets Content-Type to text/html.
         Generator function must be async and yield string or bytes.
-        Works well with Rust template engine's streaming capabilities.
 
     See Also:
         :class:`StreamResponse`: The underlying response class
-        :class:`RustTemplateEngine`: Rust-based template engine with streaming
     """
     return StreamResponse(template_generator, content_type='text/html')

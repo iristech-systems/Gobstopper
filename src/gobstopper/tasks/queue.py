@@ -352,8 +352,17 @@ class TaskQueue:
             if self._storage_factory:
                 self._storage = self._storage_factory()
             else:
-                from .storage import TaskStorage  # local import
-                self._storage = TaskStorage()
+                try:
+                    from .storage import TaskStorage  # local import
+                    self._storage = TaskStorage()
+                except ImportError:
+                    # Fallback to NoopStorage if DuckDB is missing
+                    # but tasks were explicitly enabled
+                    from loguru import logger
+                    logger.warning("⚠️ DuckDB is required for task storage but not installed.")
+                    logger.info("💡 Run 'uv add duckdb' to enable persistent background tasks.")
+                    logger.info("⏭️  Falling back to NoopStorage (tasks will be non-persistent)")
+                    self._storage = NoopStorage()
         return self._storage
     
     def register_task(self, name: str, category: str = "default"):
