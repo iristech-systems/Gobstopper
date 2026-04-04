@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.4.2] - 2026-04-04
+
+### Lifecycle + MCP + DX Fixes
+
+#### Granian-native RSGI lifecycle hooks
+- Added native RSGI lifecycle integration via `__rsgi_init__` and `__rsgi_del__` in `Gobstopper`.
+- Startup/shutdown now run through Granian worker lifecycle instead of the previous SIGTERM workaround path.
+- Added idempotent shutdown guards to avoid duplicate shutdown execution.
+
+#### Primary-worker startup helper
+- Added `@app.on_startup_primary` for one-time startup tasks (DB seeding, model preload, singleton worker startup) in multi-worker setups.
+- Uses the existing worker-selection semantics from `should_run_background_workers()`.
+
+#### SecurityMiddleware CSRF bypass API (trusted machine endpoints)
+- Added CSRF exemption controls for non-browser trusted calls:
+  - `csrf_exempt_paths`
+  - `csrf_exempt_prefixes`
+  - `csrf_trusted_headers`
+  - `csrf_exempt_predicate`
+- Added fluent runtime helpers:
+  - `exempt_csrf_path()`
+  - `exempt_csrf_prefix()`
+  - `trust_csrf_header()`
+  - `exempt_csrf_when()`
+
+#### Datastar / gobstopper.html ergonomics + typing
+- Added typed fragment support in Datastar extension (`FragmentLike = str | HasHtml | Renderable`).
+- Added `Datastar.normalize_fragment(...)` and `Datastar.merge_many(...)` helpers.
+- Added `fragment(...)` ergonomic alias for `Datastar.merge_fragments(...)`.
+- Improved `gobstopper.html.datastar` typing with `DatastarAttrs` and recursive `JSONValue` aliases.
+
+#### Router capability detection cleanup
+- Router capability checks are now cached once at app init (`_router_supports_params`, `_router_supports_allowed_methods`).
+- Removed repeated per-request exception-based version probing in route matching and allowed-method detection paths.
+
+#### MCP protocol + transport hardening
+- Added `MCPServer.handle_request(...)` for mounted HTTP MCP compatibility.
+- Fixed MCP transport error-path import bug (`JSONResponse` scoping issue).
+- Updated `initialize` response shape to MCP-compatible fields (`protocolVersion`, `capabilities`, `serverInfo`, `instructions`).
+- Added/updated MCP docs attachment and UI flow for mounted endpoints.
+
+#### Example app updates
+- Removed the MCP-to-OpenAPI bridge endpoints from `example_mcp_app.py`.
+- Updated demo search behavior to match query against both title and text for realistic tool-flow testing.
+
 ## [0.4.1] - 2026-03-14
 
 ### ✨ Test Client, Graceful Shutdown, Per-Route Rate Limiting

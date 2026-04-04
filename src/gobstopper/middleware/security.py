@@ -202,6 +202,10 @@ class SecurityMiddleware:
         cookie_max_age: int = SESSION_EXPIRATION_TIME,
         rolling_sessions: bool = False,
         sign_session_id: bool = False,
+        csrf_exempt_paths: Optional[list[str]] = None,
+        csrf_exempt_prefixes: Optional[list[str]] = None,
+        csrf_trusted_headers: Optional[dict[str, Optional[str]]] = None,
+        csrf_exempt_predicate: Optional[Callable[[Request], bool]] = None,
     ):
         if not secret_key:
             if not debug and (enable_csrf or sign_session_id):
@@ -216,88 +220,100 @@ class SecurityMiddleware:
 
         self.enable_csrf = enable_csrf
         self.enable_security_headers = enable_security_headers
+        self.csrf_exempt_paths = set(csrf_exempt_paths or [])
+        self.csrf_exempt_prefixes = tuple(csrf_exempt_prefixes or ())
+        self.csrf_trusted_headers = {
+            k.lower(): v for k, v in (csrf_trusted_headers or {}).items()
+        }
+        self.csrf_exempt_predicate = csrf_exempt_predicate
 
         # Auto-configure for Datastar if enabled
         if datastar_enabled:
             # Disable COEP and COOP (they block external scripts and fetch)
             coep_policy = ""
             coop_policy = ""
-            
+
             # Add unsafe-eval to CSP for Datastar expressions
             if "'unsafe-eval'" not in csp_policy:
                 # Parse CSP and add unsafe-eval to script-src
-                directives = csp_policy.split(';')
+                directives = csp_policy.split(";")
                 script_src_found = False
                 new_directives = []
-                
+
                 for directive in directives:
                     directive = directive.strip()
-                    if directive.startswith('script-src'):
+                    if directive.startswith("script-src"):
                         directive += " 'unsafe-eval'"
                         script_src_found = True
                     new_directives.append(directive)
-                
+
                 # If no script-src directive, add one
                 if not script_src_found:
-                    new_directives.append("script-src 'self' 'unsafe-eval' 'unsafe-inline'")
+                    new_directives.append(
+                        "script-src 'self' 'unsafe-eval' 'unsafe-inline'"
+                    )
                 else:
                     # ensure unsafe-inline is present if script-src exists
                     final_directives = []
                     for d in new_directives:
-                        if d.startswith('script-src') and "'unsafe-inline'" not in d:
+                        if d.startswith("script-src") and "'unsafe-inline'" not in d:
                             d += " 'unsafe-inline'"
                         final_directives.append(d)
                     new_directives = final_directives
-                
-                csp_policy = '; '.join(new_directives)
-            
+
+                csp_policy = "; ".join(new_directives)
+
             # Add unsafe-inline to style-src for inline styles
             if "'unsafe-inline'" not in csp_policy or "style-src" not in csp_policy:
-                directives = csp_policy.split(';')
+                directives = csp_policy.split(";")
                 style_src_found = False
                 new_directives = []
-                
+
                 for directive in directives:
                     directive = directive.strip()
-                    if directive.startswith('style-src'):
+                    if directive.startswith("style-src"):
                         if "'unsafe-inline'" not in directive:
                             directive += " 'unsafe-inline'"
                         style_src_found = True
                     new_directives.append(directive)
-                
+
                 # If no style-src directive, add one
                 if not style_src_found:
                     new_directives.append("style-src 'self' 'unsafe-inline'")
-                
-                csp_policy = '; '.join(new_directives)
-            
+
+                csp_policy = "; ".join(new_directives)
+
             # Add Datastar CDN to script-src and connect-src
             datastar_cdn = "https://cdn.jsdelivr.net"
             if datastar_cdn not in csp_policy:
-                directives = csp_policy.split(';')
+                directives = csp_policy.split(";")
                 new_directives = []
                 script_src_found = False
                 connect_src_found = False
-                
+
                 for directive in directives:
                     directive = directive.strip()
-                    if directive.startswith('script-src'):
+                    if directive.startswith("script-src"):
                         directive += f" {datastar_cdn}"
                         script_src_found = True
-                    elif directive.startswith('connect-src'):
+                    elif directive.startswith("connect-src"):
                         directive += f" {datastar_cdn}"
                         connect_src_found = True
                     new_directives.append(directive)
-                
+
                 if not script_src_found:
-                    new_directives.append(f"script-src 'self' 'unsafe-eval' {datastar_cdn}")
+                    new_directives.append(
+                        f"script-src 'self' 'unsafe-eval' {datastar_cdn}"
+                    )
                 if not connect_src_found:
                     new_directives.append(f"connect-src 'self' {datastar_cdn}")
-                
-                csp_policy = '; '.join(new_directives)
-            
+
+                csp_policy = "; ".join(new_directives)
+
             if not debug:
-                log.info("Datastar mode enabled: COEP/COOP disabled, CSP configured for Datastar")
+                log.info(
+                    "Datastar mode enabled: COEP/COOP disabled, CSP configured for Datastar"
+                )
             log.debug(f"Final CSP policy: {csp_policy}")
 
             # ── Tailwind CDN / JIT warning ───────────────────────────────────
@@ -342,10 +358,14 @@ class SecurityMiddleware:
         if self.env == "production":
             # Force secure flags
             if not cookie_secure:
-                log.warning("ENV=production: Overriding cookie_secure=False to True for safety")
+                log.warning(
+                    "ENV=production: Overriding cookie_secure=False to True for safety"
+                )
                 eff_secure = True
             if not cookie_httponly:
-                log.warning("ENV=production: Overriding cookie_httponly=False to True for safety")
+                log.warning(
+                    "ENV=production: Overriding cookie_httponly=False to True for safety"
+                )
                 eff_httponly = True
             # Disallow SameSite=None unless Secure=true (already ensured) but prefer Strict
             if (cookie_samesite or "").lower() not in ("strict", "lax"):
@@ -433,7 +453,9 @@ class SecurityMiddleware:
             return self._verify(raw)
         return raw
 
-    async def __call__(self, request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Response:
+    async def __call__(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Any]]
+    ) -> Response:
         """Process request through security middleware.
 
         Handles session loading, CSRF validation, request processing, and session saving.
@@ -469,9 +491,10 @@ class SecurityMiddleware:
 
         # CSRF protection for state-changing methods
         if self.enable_csrf and request.method in ["POST", "PUT", "DELETE", "PATCH"]:
-            ok = await self._verify_csrf_token(request, session_data)
-            if not ok:
-                return Response("CSRF token missing or invalid", status=403)
+            if not self._is_csrf_exempt_request(request):
+                ok = await self._verify_csrf_token(request, session_data)
+                if not ok:
+                    return Response("CSRF token missing or invalid", status=403)
 
         response = await call_next(request)
 
@@ -490,7 +513,11 @@ class SecurityMiddleware:
 
             # Set session cookie
             if response:
-                cookie_value = self._sign(request._session_id) if self.sign_session_id else request._session_id
+                cookie_value = (
+                    self._sign(request._session_id)
+                    if self.sign_session_id
+                    else request._session_id
+                )
 
                 # Build cookie attributes
                 cookie_parts = [f"{self.cookie_name}={cookie_value}"]
@@ -514,6 +541,58 @@ class SecurityMiddleware:
             self._add_security_headers(response)
 
         return response
+
+    def exempt_csrf_path(self, path: str) -> "SecurityMiddleware":
+        """Exempt an exact path from CSRF checks."""
+        self.csrf_exempt_paths.add(path)
+        return self
+
+    def exempt_csrf_prefix(self, prefix: str) -> "SecurityMiddleware":
+        """Exempt a URL prefix from CSRF checks."""
+        self.csrf_exempt_prefixes = (*self.csrf_exempt_prefixes, prefix)
+        return self
+
+    def trust_csrf_header(
+        self, header_name: str, value: Optional[str] = None
+    ) -> "SecurityMiddleware":
+        """Trust requests carrying a machine-authenticated header.
+
+        If ``value`` is None, any non-empty header value bypasses CSRF.
+        """
+        self.csrf_trusted_headers[header_name.lower()] = value
+        return self
+
+    def exempt_csrf_when(
+        self, predicate: Callable[[Request], bool]
+    ) -> "SecurityMiddleware":
+        """Set predicate-based CSRF exemption logic."""
+        self.csrf_exempt_predicate = predicate
+        return self
+
+    def _is_csrf_exempt_request(self, request: Request) -> bool:
+        path = request.path or ""
+
+        if path in self.csrf_exempt_paths:
+            return True
+
+        for prefix in self.csrf_exempt_prefixes:
+            if path.startswith(prefix):
+                return True
+
+        for header_name, expected_value in self.csrf_trusted_headers.items():
+            actual = request.headers.get(header_name)
+            if not actual:
+                continue
+            if expected_value is None or actual == expected_value:
+                return True
+
+        if self.csrf_exempt_predicate is not None:
+            try:
+                return bool(self.csrf_exempt_predicate(request))
+            except Exception:
+                log.exception("CSRF exemption predicate failed")
+
+        return False
 
     def generate_csrf_token(self, session: Dict[str, Any]) -> str:
         """Generate a CSRF token and store it in the session.
@@ -545,7 +624,9 @@ class SecurityMiddleware:
         session["csrf_token"] = token
         return token
 
-    async def _verify_csrf_token(self, request: Request, session: Dict[str, Any]) -> bool:
+    async def _verify_csrf_token(
+        self, request: Request, session: Dict[str, Any]
+    ) -> bool:
         """Verify CSRF token from header or form field against the session.
 
         Validates that the CSRF token in the request matches the one stored in

@@ -1,6 +1,6 @@
 [project]
 name = "gobstopper"
-version = "0.4.1"
+version = "0.4.2"
 description = "A simple wrapper delivering complete web framework power - like Wonka's Gobstopper, wrapping RSGI complexity into Flask-like simplicity"
 readme = "README.md"
 license = {text = "MIT"}

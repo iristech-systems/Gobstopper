@@ -1,10 +1,13 @@
-
 import json
 import asyncio
 import functools
 from enum import Enum
-from typing import AsyncGenerator, Callable, Any, Dict
+from typing import AsyncGenerator, Callable, Any, Dict, Iterable, TypeAlias
 from ..http.response import StreamResponse
+from ..html._types import HasHtml, Renderable
+
+FragmentLike: TypeAlias = str | HasHtml | Renderable
+
 
 class MergeMode(Enum):
     """Datastar RC.8 patch-elements merge modes.
@@ -25,21 +28,23 @@ class MergeMode(Enum):
         BEFORE   — insert before the target element itself.
         AFTER    — insert after the target element itself.
     """
+
     # Canonical names
-    REPLACE_ELEMENT = "outer"    # Replace entire element (including its tag)
-    REPLACE_CONTENT = "inner"    # Replace element's inner content only
+    REPLACE_ELEMENT = "outer"  # Replace entire element (including its tag)
+    REPLACE_CONTENT = "inner"  # Replace element's inner content only
 
     # Deprecated aliases kept for backwards compatibility
-    OUTER = "outer"              # Deprecated: use REPLACE_ELEMENT
-    INNER = "inner"              # Deprecated: use REPLACE_CONTENT
+    OUTER = "outer"  # Deprecated: use REPLACE_ELEMENT
+    INNER = "inner"  # Deprecated: use REPLACE_CONTENT
 
     # Other Datastar modes
-    REPLACE = "replace"          # Hard-replace (resets DOM state)
-    REMOVE  = "remove"           # Remove target element
-    PREPEND = "prepend"          # Insert before first child
-    APPEND  = "append"           # Insert after last child
-    BEFORE  = "before"           # Insert before target element
-    AFTER   = "after"            # Insert after target element
+    REPLACE = "replace"  # Hard-replace (resets DOM state)
+    REMOVE = "remove"  # Remove target element
+    PREPEND = "prepend"  # Insert before first child
+    APPEND = "append"  # Insert after last child
+    BEFORE = "before"  # Insert before target element
+    AFTER = "after"  # Insert after target element
+
 
 class Datastar:
     """Datastar RC.8 Hypermedia Extension for Gobstopper.
@@ -69,8 +74,17 @@ class Datastar:
     """
 
     # Valid modes for Datastar RC.8 patch-elements
-    VALID_MODES = {"outer", "inner", "replace", "remove", "prepend", "append", "before", "after"}
-    
+    VALID_MODES = {
+        "outer",
+        "inner",
+        "replace",
+        "remove",
+        "prepend",
+        "append",
+        "before",
+        "after",
+    }
+
     # Default free CDN URL
     _CDN_URL = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"
 
@@ -113,24 +127,36 @@ class Datastar:
     @staticmethod
     def stream(generator: AsyncGenerator[str, None]) -> StreamResponse:
         """Create a Datastar-compatible SSE stream response.
-        
+
         Args:
             generator: Async generator yielding formatted signal strings.
-            
+
         Returns:
             StreamResponse with 'text/event-stream' content type and no-cache headers.
         """
         return StreamResponse(
             generator,
             content_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive"
-            }
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
     @staticmethod
-    def merge_fragments(fragment: str, selector: str = None, merge_mode: MergeMode = MergeMode.REPLACE_ELEMENT, settling_time: int = None) -> str:
+    def normalize_fragment(fragment: FragmentLike) -> str:
+        """Convert htpy/html objects to a single-line HTML fragment string."""
+        if not isinstance(fragment, str):
+            if hasattr(fragment, "__html__"):
+                fragment = fragment.__html__()
+            else:
+                fragment = str(fragment)
+        return " ".join(fragment.split())
+
+    @staticmethod
+    def merge_fragments(
+        fragment: FragmentLike,
+        selector: str = None,
+        merge_mode: MergeMode = MergeMode.REPLACE_ELEMENT,
+        settling_time: int = None,
+    ) -> str:
         """Format a Datastar 'patch elements' SSE event (RC.8 format).
 
         The SSE protocol requires each ``data:`` line to contain exactly one
@@ -166,11 +192,7 @@ class Datastar:
         import re
 
         # Support htpy elements and any __html__ object
-        if not isinstance(fragment, str):
-            if hasattr(fragment, "__html__"):
-                fragment = fragment.__html__()
-            else:
-                fragment = str(fragment)
+        fragment = Datastar.normalize_fragment(fragment)
 
         # Validate mode
         if merge_mode.value not in Datastar.VALID_MODES:
@@ -179,12 +201,6 @@ class Datastar:
                 f"Valid modes: {', '.join(sorted(Datastar.VALID_MODES))}. "
                 f"See: https://data-star.dev/reference/sse_events"
             )
-
-        # ── Newline normalisation ────────────────────────────────────────────
-        # The SSE spec requires each "data:" field to be a single line.
-        # Multi-line HTML must be collapsed; whitespace between tags is
-        # condensed to a single space so the rendered output stays tidy.
-        fragment = " ".join(fragment.split())
 
         data_lines = []
 
@@ -208,32 +224,50 @@ class Datastar:
         return output
 
     @staticmethod
+    def merge_many(
+        fragments: Iterable[FragmentLike],
+        selector: str = None,
+        merge_mode: MergeMode = MergeMode.REPLACE_ELEMENT,
+        settling_time: int = None,
+    ) -> str:
+        """Merge multiple fragments in one SSE payload string."""
+        return "".join(
+            Datastar.merge_fragments(
+                frag,
+                selector=selector,
+                merge_mode=merge_mode,
+                settling_time=settling_time,
+            )
+            for frag in fragments
+        )
+
+    @staticmethod
     def patch_signals(signals: Dict[str, Any], only_if_missing: bool = False) -> str:
         """Format a Datastar 'patch signals' SSE event.
-        
+
         This allows you to update reactive signals on the client without patching HTML.
         Useful for updating state, showing/hiding elements, or triggering client-side effects.
-        
+
         Args:
             signals: Dictionary of signal names to values. Set value to None to remove a signal.
             only_if_missing: If True, only set signals that don't already exist on the client.
-            
+
         Returns:
             Formatted SSE data string.
-            
+
         Examples:
             >>> # Update cart count and total
             >>> Datastar.patch_signals({"cartCount": 3, "cartTotal": 99.99})
-            
+
             >>> # Remove a signal
             >>> Datastar.patch_signals({"tempMessage": None})
-            
+
             >>> # Only set if not already defined
             >>> Datastar.patch_signals({"userId": 123}, only_if_missing=True)
         """
         # Format signals as JavaScript object notation
         signals_str = json.dumps(signals)
-        
+
         output = "event: datastar-patch-signals\n"
         if only_if_missing:
             output += "data: onlyIfMissing true\n"
@@ -251,7 +285,7 @@ def datastar_stream(
     selector: str,
     mode: MergeMode = MergeMode.REPLACE_ELEMENT,
     interval: float = 1.0,
-    settling_time: int = None
+    settling_time: int = None,
 ):
     """Decorator to simplify Datastar SSE streaming endpoints.
 
@@ -285,6 +319,7 @@ def datastar_stream(
         >>>     count = get_current_count()
         >>>     return f'<span id="count">{count}</span>'
     """
+
     def decorator(func: Callable):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -295,19 +330,35 @@ def datastar_stream(
                         html = await func(*args, **kwargs)
                     else:
                         html = func(*args, **kwargs)
-                    
+
                     # Format as Datastar SSE event
                     yield Datastar.merge_fragments(
                         html,
                         selector=selector,
                         merge_mode=mode,
-                        settling_time=settling_time
+                        settling_time=settling_time,
                     )
-                    
+
                     # Wait for next interval
                     await asyncio.sleep(interval)
-            
+
             return Datastar.stream(generator())
-        
+
         return wrapper
+
     return decorator
+
+
+def fragment(
+    html_fragment: FragmentLike,
+    selector: str = None,
+    merge_mode: MergeMode = MergeMode.REPLACE_ELEMENT,
+    settling_time: int = None,
+) -> str:
+    """Small ergonomic alias for Datastar.merge_fragments()."""
+    return Datastar.merge_fragments(
+        html_fragment,
+        selector=selector,
+        merge_mode=merge_mode,
+        settling_time=settling_time,
+    )

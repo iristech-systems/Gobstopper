@@ -13,6 +13,7 @@ import mimetypes
 import os
 import sys
 import traceback
+import threading
 from urllib.parse import unquote
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,14 +22,14 @@ from typing import Callable, Dict, List, Optional, Tuple, Any, Awaitable
 # Helper to map Python-style <type:name> or <name> to Rust router format
 # Old router used :name, new router uses <type:name> or <name>
 # For backward compatibility, we keep the pattern but now just pass through
-_PARAM_TO_NAME = re.compile(r'<(?:[^:>]+:)?([^>]+)>')
+_PARAM_TO_NAME = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
 
 from ..log import log
 from ..http.request import Request
 from ..http.response import Response, JSONResponse, FileResponse, StreamResponse
 from ..http.routing import RouteHandler
 from ..websocket.connection import WebSocket
-from ..tasks.queue import TaskQueue, TaskPriority
+from ..tasks.queue import TaskQueue, TaskPriority, should_run_background_workers
 from ..middleware.static import StaticFileMiddleware
 from .mixins import MiddlewareMixin, RouterMixin
 
@@ -38,11 +39,14 @@ from ..templates.engine import TemplateEngine, TemplateRenderError
 Handler = Callable[..., Any]
 ErrorHandler = Callable[[Request, Exception], Response]
 RouteResult = tuple[Optional[RouteHandler], dict[str, str]]
-Middleware = Callable[[Request, Callable[[Request], Awaitable[Any]]], Awaitable[Response]]
+Middleware = Callable[
+    [Request, Callable[[Request], Awaitable[Any]]], Awaitable[Response]
+]
 MiddlewareTuple = tuple[Middleware, int]
 
 try:
     from gobstopper._core import Router
+
     RUST_ROUTER_AVAILABLE = True
 except ImportError:
     RUST_ROUTER_AVAILABLE = False
@@ -51,6 +55,7 @@ try:
     from granian.rsgi import Scope, HTTPProtocol, WebsocketProtocol
 except ImportError:
     from typing import TypedDict
+
     # Fallback types for development without Granian
     class Scope(TypedDict, total=True):
         proto: str
@@ -60,15 +65,28 @@ except ImportError:
         headers: Any
 
     class HTTPProtocol:
-        async def __call__(self): pass
-        def response_str(self, status, headers, body): pass
-        def response_bytes(self, status, headers, body): pass
-        def response_file(self, status, headers, file): pass
-        def response_file_range(self, status, headers, file, start, end): pass
-        def response_stream(self, status, headers): pass
-    
+        async def __call__(self):
+            pass
+
+        def response_str(self, status, headers, body):
+            pass
+
+        def response_bytes(self, status, headers, body):
+            pass
+
+        def response_file(self, status, headers, file):
+            pass
+
+        def response_file_range(self, status, headers, file, start, end):
+            pass
+
+        def response_stream(self, status, headers):
+            pass
+
     class WebsocketProtocol:
-        async def accept(self): pass
+        async def accept(self):
+            pass
+
 
 # Try to import RSGIProtocolClosed from granian
 try:
@@ -77,25 +95,25 @@ except ImportError:
     # Fallback if granian structure changes
     class RSGIProtocolClosed(Exception):
         """Fallback for RSGIProtocolClosed if import fails"""
+
         pass
 
 
 class Gobstopper(MiddlewareMixin, RouterMixin):
-
     """High-performance async web framework for RSGI protocol.
-    
-    Gobstopper is a hybrid Python/Rust web framework built specifically for Granian's 
+
+    Gobstopper is a hybrid Python/Rust web framework built specifically for Granian's
     RSGI interface. It combines Flask-like developer experience with performance
     optimizations through optional Rust components.
-    
+
     The framework automatically detects and uses Rust components when available,
     falling back gracefully to Python implementations. This hybrid architecture
     provides optimal performance while maintaining compatibility.
-    
+
     Args:
         name: Application name, typically ``__name__`` of the calling module.
             Used for logging and debugging purposes.
-        
+
     Attributes:
         name (str): Application identifier
         logger: Structured logger with request context and tracing support
@@ -105,43 +123,49 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         template_engine: Jinja2 or Rust template engine instance (None until initialized)
         task_queue (TaskQueue): Background task queue with DuckDB persistence
         rust_router_available (bool): Whether Rust routing components are available
-        
+
     Examples:
         Basic application setup:
-        
+
         >>> from gobstopper import Gobstopper, Request
         >>> app = Gobstopper(__name__)
-        >>> 
+        >>>
         >>> @app.get("/")
         >>> async def hello(request: Request):
         ...     return {"message": "Hello World"}
-        
+
         With template engine:
-        
+
         >>> app = Gobstopper(__name__)
         >>> app.init_templates("templates")
-        >>> 
+        >>>
         >>> @app.get("/page")
         >>> async def page(request: Request):
         ...     return await app.render_template("page.html", title="Gobstopper")
-        
+
         Background task setup:
-        
-        >>> @app.task("send_email", category="notifications") 
+
+        >>> @app.task("send_email", category="notifications")
         >>> async def send_email(to: str, subject: str):
         ...     return {"status": "sent"}
-        
+
     Note:
         Gobstopper uses RSGI protocol (not ASGI) and requires Granian server.
         Run with: ``granian --interface rsgi app:app``
-        
+
     See Also:
         :meth:`init_templates`: Initialize template engine
-        :meth:`add_middleware`: Add middleware functions  
+        :meth:`add_middleware`: Add middleware functions
         :meth:`add_background_task`: Queue background tasks
     """
-    
-    def __init__(self, name: str = __name__, debug: bool = False, slash_policy: str = 'strict', health_check: bool = True):
+
+    def __init__(
+        self,
+        name: str = __name__,
+        debug: bool = False,
+        slash_policy: str = "strict",
+        health_check: bool = True,
+    ):
         super().__init__()
         self.name = name
         self.debug = debug
@@ -155,11 +179,11 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self.template_context_processors: list[Callable[[], dict]] = []
         # Registered blueprints
         self.blueprints: list[Any] = []
-        
+
         # Routing policy
         self.slash_policy: str = slash_policy  # 'strict' | 'add_slash' | 'remove_slash'
         self._conflicts: list[dict[str, str]] = []
-        
+
         # Initialize components
         self.template_engine = None
         self.task_queue = TaskQueue()
@@ -170,8 +194,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             self.metrics_port = int(os.getenv("GOBSTOPPER_METRICS_PORT", "9090"))
         except ValueError:
             self.metrics_port = 9090
-        
-        self.logger.info(f"📊 metrics_enabled: {self.metrics_enabled} (port {self.metrics_port})")
+
+        self.logger.info(
+            f"📊 metrics_enabled: {self.metrics_enabled} (port {self.metrics_port})"
+        )
 
         # Internal template engine for themed error pages
         _core_dir = Path(__file__).parent.resolve()
@@ -183,18 +209,24 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         except Exception as e:
             print(f"Failed to initialize template engine: {e}")
             import traceback
+
             traceback.print_exc()
 
         # Track startup state
         self._startup_complete = False
         self._startup_lock = asyncio.Lock()
+        self._startup_via_granian = False
 
         # Graceful shutdown state
         self._accepting_requests = True
         self._inflight_requests = 0
         self._inflight_zero = asyncio.Event()
         self._inflight_zero.set()
-        self._shutdown_hooks: list[Callable[[], Any] | Callable[[], Awaitable[Any]]] = []
+        self._shutdown_started = False
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_hooks: list[
+            Callable[[], Any] | Callable[[], Awaitable[Any]]
+        ] = []
 
         # Recurring / scheduled tasks (@app.repeat)
         self._scheduled_tasks: list[dict] = []
@@ -205,15 +237,21 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         if self.rust_router_available:
             self.http_router = Router()
             self.websocket_router = Router()
+            self._router_supports_params = hasattr(self.http_router, "get_with_params")
+            self._router_supports_allowed_methods = hasattr(
+                self.http_router, "allowed_methods"
+            )
             self.logger.info("🚀 Found Rust extensions, using high-performance router.")
         else:
             self.http_router = None
             self.websocket_router = None
+            self._router_supports_params = False
+            self._router_supports_allowed_methods = False
             self.logger.info("⚠️ Rust extensions not found, using Python-based router.")
-        
+
         # Mounts (sub-apps)
         self.mounts: list[tuple[str, Any]] = []
-        
+
         # Default error handlers
         self.error_handlers[404] = self._default_404_handler
         self.error_handlers[500] = self._default_500_handler
@@ -221,6 +259,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         # Mount Mission Control Dashboard
         try:
             from .dashboard import dashboard
+
             self.register_blueprint(dashboard)
             self.logger.info("🍬 Mission Control Dashboard available at /_gobstopper")
         except ImportError as e:
@@ -231,13 +270,15 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         if health_check:
             try:
                 from .health import health_bp
+
                 self.register_blueprint(health_bp)
                 self.logger.info("💚 Health endpoints available at /health and /ready")
             except ImportError as e:
                 self.logger.warning(f"⚠️  Health endpoints skipped: {e}")
-                
+
         # Wait, I can just define it here.
         if self.debug:
+
             @self.websocket("/_hot_reload")
             async def _hot_reload_ws(ws):
                 await ws.accept()
@@ -249,8 +290,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             if self._conflicts:
                 self.logger.warning("⚠️ Routing conflicts detected:")
                 for c in self._conflicts:
-                    self.logger.warning(f" - {c['reason']}: existing={c['existing']} new={c['new']}")
-    
+                    self.logger.warning(
+                        f" - {c['reason']}: existing={c['existing']} new={c['new']}"
+                    )
+
     def init_templates(self, template_folder: str = "templates", **kwargs):
         """Initialize the Jinja2 template engine.
 
@@ -273,9 +316,9 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :meth:`context_processor`: Add global template context
         """
         self.template_engine = TemplateEngine(template_folder, **kwargs)
-        self.template_engine.add_global('url_for', self.url_for)
+        self.template_engine.add_global("url_for", self.url_for)
         self.logger.info("📄 Initialized Jinja2 template engine")
-    
+
     def task(self, name: str = None, category: str = "default"):
         """Decorator to register background task handlers with categorization.
 
@@ -345,12 +388,14 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :class:`gobstopper.tasks.queue.TaskQueue`: Task queue implementation
             :class:`gobstopper.tasks.queue.TaskPriority`: Priority levels (LOW, NORMAL, HIGH, URGENT)
         """
+
         def decorator(func: Handler) -> Handler:
             task_name = name or func.__name__
             self.task_queue.register_task(task_name, category)(func)
             return func
+
         return decorator
-    
+
     def repeat(self, interval: float, name: str = None):
         """Decorator to register a recurring background task.
 
@@ -372,13 +417,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             async def sync_data():
                 await do_sync()
         """
+
         def decorator(func: Handler) -> Handler:
-            self._scheduled_tasks.append({
-                "func": func,
-                "interval": interval,
-                "name": name or func.__name__,
-            })
+            self._scheduled_tasks.append(
+                {
+                    "func": func,
+                    "interval": interval,
+                    "name": name or func.__name__,
+                }
+            )
             return func
+
         return decorator
 
     def before_request(self, func: Handler) -> Handler:
@@ -540,39 +589,43 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         """
         self.template_context_processors.append(func)
         return func
-    
+
     def template_filter(self, name: str = None):
         """Decorator to register template filter
-        
+
         Note: When using the Rust template engine, custom filters are not
         supported. In that case this becomes a no-op to avoid noisy warnings.
         """
+
         def decorator(func):
             if self.template_engine:
                 filter_name = name or func.__name__
                 # Skip registration for Rust engine (not supported)
-                if getattr(self.template_engine, 'using_rust', False):
+                if getattr(self.template_engine, "using_rust", False):
                     return func
                 self.template_engine.add_filter(filter_name, func)
             return func
+
         return decorator
-    
+
     def template_global(self, name: str = None):
         """Decorator to register template global
-        
+
         Note: When using the Rust template engine, custom globals are not
         supported. In that case this becomes a no-op to avoid noisy warnings.
         """
+
         def decorator(func):
             if self.template_engine:
                 global_name = name or func.__name__
                 # Skip registration for Rust engine (not supported)
-                if getattr(self.template_engine, 'using_rust', False):
+                if getattr(self.template_engine, "using_rust", False):
                     return func
                 self.template_engine.add_global(global_name, func)
             return func
+
         return decorator
-    
+
     def error_handler(self, status_code: int):
         """Decorator to register custom error handlers for HTTP status codes.
 
@@ -642,14 +695,16 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :class:`gobstopper.http.response.Response`: Response construction
             :class:`gobstopper.http.response.JSONResponse`: JSON error responses
         """
+
         def decorator(func: ErrorHandler) -> ErrorHandler:
             self.error_handlers[status_code] = func
             return func
+
         return decorator
-    
+
     async def render_template(self, template_name: str, **context) -> Response:
         """Render template with context data and return HTTP response.
-        
+
         Renders the specified template file with provided context variables,
         returning a properly formatted HTTP response.
 
@@ -677,7 +732,9 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :meth:`context_processor`: Add global template context
         """
         if not self.template_engine:
-            raise RuntimeError("Template engine not initialized. Call init_templates() first.")
+            raise RuntimeError(
+                "Template engine not initialized. Call init_templates() first."
+            )
 
         # Apply context processors
         for processor in self.template_context_processors:
@@ -686,21 +743,25 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             else:
                 context.update(processor() or {})
 
-        html = await self.template_engine.render_template_async(template_name, **context)
-        return Response(html, content_type='text/html')
+        html = await self.template_engine.render_template_async(
+            template_name, **context
+        )
+        return Response(html, content_type="text/html")
 
     async def render_string(self, content: str, **context) -> Response:
         """Render template from string content with context data.
-        
+
         Args:
             content: Template string content.
             **context: Template context variables.
-            
+
         Returns:
             Response: HTTP response with rendered HTML content.
         """
         if not self.template_engine:
-            raise RuntimeError("Template engine not initialized. Call init_templates() first.")
+            raise RuntimeError(
+                "Template engine not initialized. Call init_templates() first."
+            )
 
         # Apply context processors
         for processor in self.template_context_processors:
@@ -710,11 +771,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 context.update(processor() or {})
 
         result = await self.template_engine.render_string_async(content, **context)
-        return Response(result, content_type='text/html')
-    
-    async def add_background_task(self, name: str, category: str = "default",
-                                 priority: TaskPriority = TaskPriority.NORMAL,
-                                 max_retries: int = 0, *args, **kwargs) -> str:
+        return Response(result, content_type="text/html")
+
+    async def add_background_task(
+        self,
+        name: str,
+        category: str = "default",
+        priority: TaskPriority = TaskPriority.NORMAL,
+        max_retries: int = 0,
+        *args,
+        **kwargs,
+    ) -> str:
         """Add a background task to the queue for asynchronous execution.
 
         Queues a registered task for execution by worker processes. Tasks are persisted
@@ -797,9 +864,13 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :class:`gobstopper.tasks.queue.TaskPriority`: Priority levels
             :class:`gobstopper.tasks.queue.TaskQueue`: Task queue operations
         """
-        return await self.task_queue.add_task(name, category, priority, max_retries, *args, **kwargs)
-    
-    async def start_task_workers(self, category: str = "default", worker_count: int = 1):
+        return await self.task_queue.add_task(
+            name, category, priority, max_retries, *args, **kwargs
+        )
+
+    async def start_task_workers(
+        self, category: str = "default", worker_count: int = 1
+    ):
         """Start background worker processes for task execution.
 
         Launches worker processes that poll for and execute queued tasks in the specified
@@ -854,16 +925,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :meth:`on_startup`: Application startup hooks
         """
         await self.task_queue.start_workers(category, worker_count)
-    
-    async def _ensure_startup_complete(self):
-        """Ensure startup tasks are completed (called lazily on first request).
 
-        Executes registered startup handlers on first request with thread-safe locking.
+    async def _ensure_startup_complete(self):
+        """Ensure startup tasks are completed.
+
+        Executes registered startup handlers with thread-safe locking.
         Uses double-checked locking pattern to avoid unnecessary lock acquisition.
         If startup fails, the completion flag is not set, allowing retry on next request.
 
         Note:
-            - Called automatically by :meth:`_handle_http` before processing requests
+            - Called automatically by Granian via :meth:`__rsgi_init__`
+            - Called by :meth:`_handle_http` as a compatibility fallback
             - Startup handlers registered via :meth:`on_startup` run here
             - Protected by asyncio.Lock for concurrent request safety
             - Failures are logged but startup can be retried
@@ -871,48 +943,38 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         """
         if self._startup_complete:
             return
-        
+
         async with self._startup_lock:
             if self._startup_complete:  # Double-check after acquiring lock
                 return
-            
+
             try:
                 # Call any registered startup handlers
-                if hasattr(self, '_startup_handlers'):
+                if hasattr(self, "_startup_handlers"):
                     for handler in self._startup_handlers:
                         if asyncio.iscoroutinefunction(handler):
                             await handler()
                         else:
                             handler()
-                
+
                 # Launch recurring scheduled tasks
                 for task_def in self._scheduled_tasks:
                     t = asyncio.create_task(
-                        self._run_scheduled(task_def["func"], task_def["interval"], task_def["name"])
+                        self._run_scheduled(
+                            task_def["func"], task_def["interval"], task_def["name"]
+                        )
                     )
                     self._running_scheduled.append(t)
 
                 self._startup_complete = True
                 self.logger.debug("Application startup completed")
 
-                # Register a SIGTERM handler so on_shutdown hooks run when
-                # Granian kills the worker process.
-                import signal as _signal
-
-                def _sigterm_handler(signum, frame):
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(self.shutdown())
-
-                try:
-                    _signal.signal(_signal.SIGTERM, _sigterm_handler)
-                except (OSError, ValueError):
-                    pass  # Not the main thread — skip
-
             except Exception as e:
-                self.logger.error(f"Error during application startup: {e}", exc_info=True)
+                self.logger.error(
+                    f"Error during application startup: {e}", exc_info=True
+                )
                 # Don't mark as complete so it will be retried
-    
+
     async def _run_scheduled(self, func, interval: float, name: str):
         """Internal loop that calls *func* every *interval* seconds."""
         self.logger.info(f"⏱️  Scheduled task '{name}' started (interval={interval}s)")
@@ -926,10 +988,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             await asyncio.sleep(interval)
 
     def on_startup(self, func):
-        """Decorator to register startup handlers that run once before first request.
+        """Decorator to register startup handlers that run once per worker.
 
         Registers functions to execute during application initialization. Startup handlers
-        run lazily on the first request (not at module import time), allowing for async
+        run during Granian worker initialization (not at module import time), allowing for async
         resource initialization like database connections, cache warming, or worker startup.
 
         Args:
@@ -970,19 +1032,41 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             ...     app.logger.info("Model loaded")
 
         Note:
-            - Handlers run once on first request, not at import time
+            - Handlers run once during worker init, not at import time
             - Multiple handlers run in registration order
             - Startup is protected by asyncio.Lock for thread safety
             - Exceptions prevent startup completion and will be retried
-            - All handlers must complete before first request proceeds
+            - All handlers must complete before requests are processed
 
         See Also:
             :meth:`on_shutdown`: Cleanup handlers
             :meth:`start_task_workers`: Starting background workers
         """
-        if not hasattr(self, '_startup_handlers'):
+        if not hasattr(self, "_startup_handlers"):
             self._startup_handlers = []
         self._startup_handlers.append(func)
+        return func
+
+    def on_startup_primary(self, func):
+        """Register a startup hook that runs only in the primary worker.
+
+        Uses ``should_run_background_workers()`` for worker selection semantics.
+        """
+
+        @self.on_startup
+        async def _primary_wrapper():
+            if not should_run_background_workers():
+                self.logger.info(
+                    "Skipping on_startup_primary hook '{}' in non-primary worker",
+                    getattr(func, "__name__", repr(func)),
+                )
+                return
+
+            if asyncio.iscoroutinefunction(func):
+                await func()
+            else:
+                func()
+
         return func
 
     def on_shutdown(self, func):
@@ -1045,8 +1129,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         """
         self._shutdown_hooks.append(func)
         return func
-    
-    def _find_route(self, path: str, method: str, is_websocket: bool = False) -> RouteResult:
+
+    def _find_route(
+        self, path: str, method: str, is_websocket: bool = False
+    ) -> RouteResult:
         """Find matching route and extract path parameters.
 
         Internal route matching method that searches registered routes for a match
@@ -1072,19 +1158,15 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         if self.rust_router_available:
             if is_websocket:
                 router = self.websocket_router
-                # WebSocket routes use "WEBSOCKET" as method
-                try:
+                if self._router_supports_params:
                     match = router.get_with_params(path, "WEBSOCKET")
-                except AttributeError:
-                    # Fallback for old router
+                else:
                     match = router.get(path)
             else:
                 router = self.http_router
-                # New router signature: get_with_params(path, method)
-                try:
+                if self._router_supports_params:
                     match = router.get_with_params(path, method.upper())
-                except AttributeError:
-                    # Fallback for old router
+                else:
                     match = router.get(f"{method.upper()}{path}")
 
             if match:
@@ -1098,7 +1180,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                             typed[name] = conv(val) if conv else val
                     return handler, typed
                 except Exception:
-                    return handler, {'__conversion_error__': True}
+                    return handler, {"__conversion_error__": True}
             return None, {}
 
         # Fallback to original python implementation
@@ -1108,8 +1190,13 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 if params is not None:
                     return route, params
         return None, {}
-    
-    async def _apply_middleware(self, request: Request, stack: list[MiddlewareTuple], final_handler: Callable[[Request], Any]) -> Response:
+
+    async def _apply_middleware(
+        self,
+        request: Request,
+        stack: list[MiddlewareTuple],
+        final_handler: Callable[[Request], Any],
+    ) -> Response:
         """Compose and execute middleware chain around final handler.
 
         Builds and executes a middleware chain by wrapping the final handler with
@@ -1135,7 +1222,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
 
         # Build middleware chain inner→outer (reverse apply)
         for middleware_func, _ in reversed(stack):
-            def make_next_handler(mw: Middleware, next_h: Callable[[Request], Any]) -> Callable[[Request], Any]:
+
+            def make_next_handler(
+                mw: Middleware, next_h: Callable[[Request], Any]
+            ) -> Callable[[Request], Any]:
                 async def created(req: Request) -> Any:
                     # Support both sync and async middleware, and allow sync middleware
                     # to return either a Response or an awaitable from calling next_h.
@@ -1148,13 +1238,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     if inspect.isawaitable(result):
                         return await result
                     return result
+
                 return created
+
             handler = make_next_handler(middleware_func, handler)
         # Execute chain (handler is always async wrapper)
         result = await handler(request)
         return result
-    
-    async def _default_404_handler(self, request: Request, error: Exception) -> Response:
+
+    async def _default_404_handler(
+        self, request: Request, error: Exception
+    ) -> Response:
         """Default 404 handler that renders a themed error page.
 
         Internal error handler for 404 Not Found responses. Renders a professional
@@ -1180,20 +1274,24 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 "error_title": "Resource Not Found",
                 "error_description": f"The resource at path '{request.path}' could not be found.",
                 "debug": self.debug,
-                "request_id": getattr(request, 'id', 'N/A'),
+                "request_id": getattr(request, "id", "N/A"),
                 "request_path": request.path,
                 "request_method": request.method,
                 "request": request,
                 "traceback": None,
             }
-            body = await self._error_template_engine.render_template_async("wopr_error.html", **context)
-            return Response(body, status=404, content_type='text/html')
+            body = await self._error_template_engine.render_template_async(
+                "wopr_error.html", **context
+            )
+            return Response(body, status=404, content_type="text/html")
         else:
             # Fallback to plain text if no template engine available
             body = f"404 Not Found\n\nThe resource at path '{request.path}' could not be found."
-            return Response(body, status=404, content_type='text/plain')
+            return Response(body, status=404, content_type="text/plain")
 
-    async def _default_500_handler(self, request: Request, error: Exception) -> Response:
+    async def _default_500_handler(
+        self, request: Request, error: Exception
+    ) -> Response:
         """Default 500 handler that renders a themed error page with traceback.
 
         Internal error handler for 500 Internal Server Error responses. Renders
@@ -1223,21 +1321,23 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 "error_title": "Internal System Error",
                 "error_description": "An unexpected error occurred. The system has logged the incident.",
                 "debug": self.debug,
-                "request_id": getattr(request, 'id', 'N/A'),
+                "request_id": getattr(request, "id", "N/A"),
                 "request_path": request.path,
                 "request_method": request.method,
                 "request": request,
                 "traceback": tb_str,
             }
-            body = await self._error_template_engine.render_template_async("wopr_error.html", **context)
-            return Response(body, status=500, content_type='text/html')
+            body = await self._error_template_engine.render_template_async(
+                "wopr_error.html", **context
+            )
+            return Response(body, status=500, content_type="text/html")
         else:
             # Fallback to plain text if no template engine available
             body = "500 Internal Server Error\n\nAn unexpected error occurred."
             if self.debug:
                 body += f"\n\n{tb_str}"
-            return Response(body, status=500, content_type='text/plain')
-    
+            return Response(body, status=500, content_type="text/plain")
+
     def _problem(self, detail: str, status: int) -> Response:
         """Create a standardized problem+json response (internal helper).
 
@@ -1259,6 +1359,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :func:`gobstopper.http.problem.problem`: Public RFC 7807 problem response creator
         """
         from ..http.problem import problem as _p
+
         return _p(detail, status)
 
     async def _handle_http(self, scope: Scope, protocol: HTTPProtocol):
@@ -1297,27 +1398,29 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
 
         # If shutting down, refuse new requests gracefully
         if not self._accepting_requests:
-            resp = Response("Server is shutting down", status=503, headers={"connection": "close"})
+            resp = Response(
+                "Server is shutting down", status=503, headers={"connection": "close"}
+            )
             await self._send_response(protocol, resp, request=None)
             return
-        
+
         request = Request(scope, protocol)
         request_id = str(uuid.uuid4())
         request.id = request_id
         # Attach app reference for handlers/blueprints to access app context
-        setattr(request, 'app', self)
-        
+        setattr(request, "app", self)
+
         # Apply request limits from env
         try:
             max_bytes_env = os.getenv("WOPR_JSON_MAX_BYTES")
             if max_bytes_env:
-                setattr(request, 'max_body_bytes', int(max_bytes_env))
+                setattr(request, "max_body_bytes", int(max_bytes_env))
         except Exception:
             pass
         try:
             max_depth_env = os.getenv("WOPR_JSON_MAX_DEPTH")
             if max_depth_env:
-                setattr(request, 'max_json_depth', int(max_depth_env))
+                setattr(request, "max_json_depth", int(max_depth_env))
         except Exception:
             pass
 
@@ -1326,66 +1429,89 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self._inflight_zero.clear()
         with self.logger.contextualize(request_id=request_id):
             try:
-                
                 if self.debug:
-                    self.logger.debug(f"-> {request.method} {request.path} from {request.client_ip}")
-                
+                    self.logger.debug(
+                        f"-> {request.method} {request.path} from {request.client_ip}"
+                    )
+
                 # Delegate to mounted sub-apps if path matches
                 for mount_prefix, subapp in self.mounts:
-                    pref = mount_prefix.rstrip('/')
-                    if request.path == pref or request.path.startswith(pref + '/'):
+                    pref = mount_prefix.rstrip("/")
+                    if request.path == pref or request.path.startswith(pref + "/"):
                         sub_scope = dict(scope)
-                        new_path = request.path[len(pref):] or '/'
-                        if not new_path.startswith('/'):
-                            new_path = '/' + new_path
-                        sub_scope['path'] = new_path
+                        new_path = request.path[len(pref) :] or "/"
+                        if not new_path.startswith("/"):
+                            new_path = "/" + new_path
+                        sub_scope["path"] = new_path
                         await subapp._handle_http(sub_scope, protocol)
                         return
-                
+
                 # Find route early for scoped middleware
                 route, path_params = self._find_route(request.path, request.method)
 
                 # Populate Flask/Quart-style request attributes
                 if route:
                     request.view_args = path_params or {}
-                    request.endpoint = getattr(route.handler, '__name__', None)
+                    request.endpoint = getattr(route.handler, "__name__", None)
                     request.url_rule = route.pattern
 
                 if not route:
                     # Trailing slash redirect policy
                     alt_path = None
-                    if self.slash_policy == 'add_slash' and not request.path.endswith('/'):
-                        alt_path = request.path + '/'
-                    elif self.slash_policy == 'remove_slash' and request.path != '/' and request.path.endswith('/'):
-                        alt_path = request.path[:-1] or '/'
+                    if self.slash_policy == "add_slash" and not request.path.endswith(
+                        "/"
+                    ):
+                        alt_path = request.path + "/"
+                    elif (
+                        self.slash_policy == "remove_slash"
+                        and request.path != "/"
+                        and request.path.endswith("/")
+                    ):
+                        alt_path = request.path[:-1] or "/"
                     if alt_path:
                         alt_route, _ = self._find_route(alt_path, request.method)
                         if alt_route:
                             # Issue 308 Permanent Redirect
-                            resp = Response('', status=308, headers={'location': alt_path})
+                            resp = Response(
+                                "", status=308, headers={"location": alt_path}
+                            )
                             await self._send_response(protocol, resp, request=request)
                             return
                     # Distinguish 404 vs 405 by probing allowed methods
-                    allowed = self._allowed_methods_for_path(request.path, is_websocket=False)
+                    allowed = self._allowed_methods_for_path(
+                        request.path, is_websocket=False
+                    )
                     if allowed:
                         # 405 Method Not Allowed
                         resp = self._problem("Method Not Allowed", 405)
-                        resp.headers['Allow'] = ', '.join(sorted(set(allowed)))
+                        resp.headers["Allow"] = ", ".join(sorted(set(allowed)))
                         await self._send_response(protocol, resp, request=request)
                         return
+
                     # No matching route; run global middleware around a 404 responder
                     async def not_found_handler(req: Request) -> Response:
-                        return await self.error_handlers[404](req, Exception("Not Found"))
+                        return await self.error_handlers[404](
+                            req, Exception("Not Found")
+                        )
+
                     stack = self.middleware[:]  # only app-level
-                    response = await self._apply_middleware(request, stack, not_found_handler)
+                    response = await self._apply_middleware(
+                        request, stack, not_found_handler
+                    )
                     await self._send_response(protocol, response, request=request)
                     return
-                
+
                 # If router flagged conversion error from converter, return 400
-                if isinstance(path_params, dict) and path_params.get('__conversion_error__'):
-                    await self._send_response(protocol, self._problem("Invalid path parameter", 400), request=request)
+                if isinstance(path_params, dict) and path_params.get(
+                    "__conversion_error__"
+                ):
+                    await self._send_response(
+                        protocol,
+                        self._problem("Invalid path parameter", 400),
+                        request=request,
+                    )
                     return
-                
+
                 # Prepare kwargs and body model
                 kwargs = dict(path_params)
                 error_response: Response | None = None
@@ -1395,45 +1521,68 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     if route.signature and route._param_annotations:
                         # Use pre-cached annotations for faster lookup
                         for name, ann in route._param_annotations.items():
-                            if name == 'request' or name not in kwargs:
+                            if name == "request" or name not in kwargs:
                                 continue
                             try:
                                 # Only coerce if still a string (converters already applied to path params)
                                 if isinstance(kwargs[name], str):
                                     if ann is int:
                                         kwargs[name] = int(kwargs[name])
-                                    elif ann is uuid.UUID or (hasattr(ann, '__name__') and ann.__name__ == 'UUID'):
+                                    elif ann is uuid.UUID or (
+                                        hasattr(ann, "__name__")
+                                        and ann.__name__ == "UUID"
+                                    ):
                                         kwargs[name] = uuid.UUID(kwargs[name])
-                                    elif hasattr(ann, '__name__') and ann.__name__ == 'date':
+                                    elif (
+                                        hasattr(ann, "__name__")
+                                        and ann.__name__ == "date"
+                                    ):
                                         from datetime import date, datetime as _dt
+
                                         if not isinstance(kwargs[name], date):
-                                            kwargs[name] = _dt.strptime(kwargs[name], "%Y-%m-%d").date()
+                                            kwargs[name] = _dt.strptime(
+                                                kwargs[name], "%Y-%m-%d"
+                                            ).date()
                                 # else leave as-is
                             except Exception:
-                                error_response = self._problem(f"Invalid value for path parameter '{name}'", 400)
+                                error_response = self._problem(
+                                    f"Invalid value for path parameter '{name}'", 400
+                                )
                                 break
-                
+
                     # Decode at most one msgspec Struct from body
                     if error_response is None and route.signature:
                         for param_name, param in route.signature.parameters.items():
-                            if param_name == 'request' or param_name in kwargs:
+                            if param_name == "request" or param_name in kwargs:
                                 continue
-                            if inspect.isclass(param.annotation) and issubclass(param.annotation, msgspec.Struct):
+                            if inspect.isclass(param.annotation) and issubclass(
+                                param.annotation, msgspec.Struct
+                            ):
                                 try:
                                     # Delegate to Request.json for unified content-type checks and caching
-                                    kwargs[param.name] = await request.json(model=param.annotation)
+                                    kwargs[param.name] = await request.json(
+                                        model=param.annotation
+                                    )
                                 except Exception as e:
-                                    from ..http.errors import UnsupportedMediaType, BodyValidationError
+                                    from ..http.errors import (
+                                        UnsupportedMediaType,
+                                        BodyValidationError,
+                                    )
+
                                     if isinstance(e, UnsupportedMediaType):
-                                        error_response = self._problem(str(e) or "Unsupported Media Type", 415)
+                                        error_response = self._problem(
+                                            str(e) or "Unsupported Media Type", 415
+                                        )
                                     elif isinstance(e, BodyValidationError):
                                         payload = {"detail": "Validation Failed"}
-                                        if getattr(e, 'message', None):
+                                        if getattr(e, "message", None):
                                             payload["message"] = e.message
-                                        if getattr(e, 'errors', None):
+                                        if getattr(e, "errors", None):
                                             payload["errors"] = e.errors
                                         resp = JSONResponse(payload, status=422)
-                                        resp.headers['content-type'] = 'application/problem+json'
+                                        resp.headers["content-type"] = (
+                                            "application/problem+json"
+                                        )
                                         error_response = resp
                                     else:
                                         # Non-mapped error; re-raise
@@ -1451,17 +1600,29 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 async def final_handler(req: Request) -> Response:
                     # before_request handlers
                     for h in self.before_request_handlers:
-                        result = await h(req) if asyncio.iscoroutinefunction(h) else h(req)
+                        result = (
+                            await h(req) if asyncio.iscoroutinefunction(h) else h(req)
+                        )
                         if isinstance(result, Response):
                             return result
                     if error_response:
                         resp = error_response
                     else:
                         try:
-                            resp = await route.handler(req, **kwargs) if asyncio.iscoroutinefunction(route.handler) else route.handler(req, **kwargs)
+                            resp = (
+                                await route.handler(req, **kwargs)
+                                if asyncio.iscoroutinefunction(route.handler)
+                                else route.handler(req, **kwargs)
+                            )
                         except Exception as e:
                             # Map known body/media errors to problem+json
-                            from ..http.errors import UnsupportedMediaType, BodyValidationError, RequestTooLarge, HTTPException
+                            from ..http.errors import (
+                                UnsupportedMediaType,
+                                BodyValidationError,
+                                RequestTooLarge,
+                                HTTPException,
+                            )
+
                             if isinstance(e, HTTPException):
                                 # Handle abort() calls - use custom response if provided
                                 if e.response:
@@ -1469,61 +1630,82 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                                 elif e.status in self.error_handlers:
                                     # Use registered error handler
                                     handler = self.error_handlers[e.status]
-                                    resp = await handler(req, e) if asyncio.iscoroutinefunction(handler) else handler(req, e)
+                                    resp = (
+                                        await handler(req, e)
+                                        if asyncio.iscoroutinefunction(handler)
+                                        else handler(req, e)
+                                    )
                                 else:
                                     # Default error response
                                     resp = JSONResponse(
                                         {"error": e.description or f"HTTP {e.status}"},
-                                        status=e.status
+                                        status=e.status,
                                     )
                             elif isinstance(e, UnsupportedMediaType):
-                                resp = self._problem(str(e) or "Unsupported Media Type", 415)
+                                resp = self._problem(
+                                    str(e) or "Unsupported Media Type", 415
+                                )
                             elif isinstance(e, BodyValidationError):
                                 # Include detail and optional errors
                                 payload = {"detail": "Validation Failed"}
-                                if getattr(e, 'message', None):
+                                if getattr(e, "message", None):
                                     payload["message"] = e.message
-                                if getattr(e, 'errors', None):
+                                if getattr(e, "errors", None):
                                     payload["errors"] = e.errors
                                 resp = JSONResponse(payload, status=422)
-                                resp.headers['content-type'] = 'application/problem+json'
+                                resp.headers["content-type"] = (
+                                    "application/problem+json"
+                                )
                             elif isinstance(e, RequestTooLarge):
                                 resp = self._problem("Request body too large", 413)
                             else:
-                                if self.debug and "text/html" in req.headers.get("accept", ""):
+                                if self.debug and "text/html" in req.headers.get(
+                                    "accept", ""
+                                ):
                                     # PRISM ERROR PAGE
                                     from .prism import PrismErrorPage
+
                                     resp = Response(
                                         PrismErrorPage(req, e),
                                         status=500,
-                                        content_type="text/html"
+                                        content_type="text/html",
                                     )
                                 else:
                                     raise
-                        if not isinstance(resp, (Response, FileResponse, StreamResponse)):
-                            resp = JSONResponse(resp) if isinstance(resp, (dict, list)) else Response(str(resp))
+                        if not isinstance(
+                            resp, (Response, FileResponse, StreamResponse)
+                        ):
+                            resp = (
+                                JSONResponse(resp)
+                                if isinstance(resp, (dict, list))
+                                else Response(str(resp))
+                            )
                     # ensure request id header without mutating global handlers
-                    if hasattr(resp, 'headers'):
-                        resp.headers['x-request-id'] = req.id
+                    if hasattr(resp, "headers"):
+                        resp.headers["x-request-id"] = req.id
                     # after_request handlers
                     for h in self.after_request_handlers:
-                        resp = (await h(req, resp) or resp) if asyncio.iscoroutinefunction(h) else (h(req, resp) or resp)
+                        resp = (
+                            (await h(req, resp) or resp)
+                            if asyncio.iscoroutinefunction(h)
+                            else (h(req, resp) or resp)
+                        )
                     return resp
 
                 response = await self._apply_middleware(request, stack, final_handler)
                 await self._send_response(protocol, response, request=request)
-                
+
             except RSGIProtocolClosed:
                 # Client disconnected, normal operation
                 if self.debug:
                     self.logger.debug(f"Client disconnected: {request.path}")
                 return
-                
+
             except Exception as e:
                 # Fallback printing because loguru might fail to pickle some exceptions
                 print("!!! UNHANDLED EXCEPTION !!!", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
-                
+
                 self.logger.exception(
                     "Unhandled exception during HTTP request processing",
                     extra={
@@ -1532,18 +1714,24 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                         "request_headers": dict(request.headers),
                         "client_ip": request.client_ip,
                         "exception_type": type(e).__name__,
-                    }
+                    },
                 )
                 try:
                     handler = self.error_handlers.get(500, self._default_500_handler)
-                    response = await handler(request, e) if asyncio.iscoroutinefunction(handler) else handler(request, e)
+                    response = (
+                        await handler(request, e)
+                        if asyncio.iscoroutinefunction(handler)
+                        else handler(request, e)
+                    )
                     await self._send_response(protocol, response, request=request)
                 except Exception as inner_e:
                     self.logger.exception(
                         "Critical error in 500 error handler",
-                        extra={"original_exception": str(e)}
+                        extra={"original_exception": str(e)},
                     )
-                    protocol.response_str(500, [], f"Internal Server Error: {str(inner_e)}")
+                    protocol.response_str(
+                        500, [], f"Internal Server Error: {str(inner_e)}"
+                    )
             finally:
                 try:
                     self._inflight_requests -= 1
@@ -1582,24 +1770,33 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :class:`gobstopper.websocket.connection.WebSocket`: WebSocket API
         """
         websocket = WebSocket(scope, protocol)
-        route, path_params = self._find_route(scope.path, 'WEBSOCKET', is_websocket=True)
+        route, path_params = self._find_route(
+            scope.path, "WEBSOCKET", is_websocket=True
+        )
 
         if not route:
             log.warning(f"No WebSocket route found for path: {scope.path}")
             # Ensure protocol has a close method before calling it.
-            if hasattr(protocol, 'close'):
-                await protocol.close(1001) # 1001: "Going Away"
+            if hasattr(protocol, "close"):
+                await protocol.close(1001)  # 1001: "Going Away"
             return
 
         try:
             handler_coro = route.handler(websocket, **path_params)
             await handler_coro
         except Exception as e:
-            log.error(f"Error in WebSocket handler for {scope['path']}: {e}", exc_info=True)
-            if hasattr(protocol, 'close'):
-                await protocol.close(1011) # 1011: "Internal Error"
-    
-    async def _send_response(self, protocol: HTTPProtocol, response: Response, request: Optional[Request] = None):
+            log.error(
+                f"Error in WebSocket handler for {scope['path']}: {e}", exc_info=True
+            )
+            if hasattr(protocol, "close"):
+                await protocol.close(1011)  # 1011: "Internal Error"
+
+    async def _send_response(
+        self,
+        protocol: HTTPProtocol,
+        response: Response,
+        request: Optional[Request] = None,
+    ):
         """Send response using RSGI protocol with appropriate method.
 
         Dispatches responses to the correct RSGI protocol method based on response
@@ -1620,55 +1817,67 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         """
         if isinstance(response, FileResponse):
             # Check for Range header to support partial content
-            if request and 'range' in request.headers:
-                range_header = request.headers['range']
+            if request and "range" in request.headers:
+                range_header = request.headers["range"]
                 # Basic Range parser for 'bytes=start-end'
                 # Supports: 'bytes=0-499', 'bytes=500-', 'bytes=-500' is NOT fully supported yet by this simple regex
                 # RSGI range is start (inclusive) to end (exclusive)
-                
+
                 # Granian's RSGI implementation expects simple start/end
-                range_match = re.search(r'^bytes=(\d+)-(\d*)$', range_header)
+                range_match = re.search(r"^bytes=(\d+)-(\d*)$", range_header)
                 if range_match:
                     try:
                         file_size = os.path.getsize(response.file_path)
                         start_str, end_str = range_match.groups()
                         start = int(start_str)
-                        
+
                         if end_str:
-                            end = int(end_str) + 1  # Range header is inclusive, RSGI/slice is exclusive
+                            end = (
+                                int(end_str) + 1
+                            )  # Range header is inclusive, RSGI/slice is exclusive
                         else:
                             end = file_size
-                        
+
                         # Validate range
                         if 0 <= start < end <= file_size:
                             # Set Content-Range header
-                            response.headers['content-range'] = f'bytes {start}-{end-1}/{file_size}'
+                            response.headers["content-range"] = (
+                                f"bytes {start}-{end - 1}/{file_size}"
+                            )
                             response.status = 206
                             protocol.response_file_range(
-                                response.status, 
-                                response.to_rsgi_headers(), 
-                                response.file_path, 
-                                start, 
-                                end
+                                response.status,
+                                response.to_rsgi_headers(),
+                                response.file_path,
+                                start,
+                                end,
                             )
                             return
                         else:
                             # Invalid range -> 416 Range Not Satisfiable
                             protocol.response_str(
-                                416, 
-                                [('content-range', f'bytes */{file_size}')], 
-                                "Range Not Satisfiable"
+                                416,
+                                [("content-range", f"bytes */{file_size}")],
+                                "Range Not Satisfiable",
                             )
                             return
                     except Exception:
                         # Fallback to full file on parsing error
                         pass
-                        
-            protocol.response_file(response.status, response.to_rsgi_headers(), response.file_path)
+
+            protocol.response_file(
+                response.status, response.to_rsgi_headers(), response.file_path
+            )
         elif isinstance(response, StreamResponse):
-            transport = protocol.response_stream(response.status, [(k, v) for k, v in response.headers.items()])
-            
-            iterator = response.generator() if callable(response.generator) else response.generator
+            transport = protocol.response_stream(
+                response.status, [(k, v) for k, v in response.headers.items()]
+            )
+
+            iterator = (
+                response.generator()
+                if callable(response.generator)
+                else response.generator
+            )
             async for chunk in iterator:
                 if isinstance(chunk, str):
                     await transport.send_str(chunk)
@@ -1676,10 +1885,14 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     await transport.send_bytes(chunk)
         else:
             if isinstance(response.body, str):
-                protocol.response_str(response.status, response.to_rsgi_headers(), response.body)
+                protocol.response_str(
+                    response.status, response.to_rsgi_headers(), response.body
+                )
             else:
-                protocol.response_bytes(response.status, response.to_rsgi_headers(), response.body)
-    
+                protocol.response_bytes(
+                    response.status, response.to_rsgi_headers(), response.body
+                )
+
     def visualize_routing(self):
         """Print a detailed visualization of application routing structure.
 
@@ -1721,27 +1934,39 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self.logger.info("=== Routing Visualization ===")
         if self.mounts:
             for prefix, sub in self.mounts:
-                self.logger.info(f"Mount: {prefix} -> {getattr(sub, 'name', repr(sub))}")
+                self.logger.info(
+                    f"Mount: {prefix} -> {getattr(sub, 'name', repr(sub))}"
+                )
         if self.blueprints:
+
             def _bp_tree(bp, indent=0):
-                self.logger.info("  "*indent + f"Blueprint: {bp.name} prefix={getattr(bp, 'url_prefix', None)}")
-                for mw, prio in getattr(bp, 'middleware', []) or []:
-                    self.logger.info("  "*(indent+1) + f"MW(prio={prio}): {getattr(mw, '__name__', repr(mw))}")
-                for child, _ in getattr(bp, 'children', []) or []:
-                    _bp_tree(child, indent+1)
+                self.logger.info(
+                    "  " * indent
+                    + f"Blueprint: {bp.name} prefix={getattr(bp, 'url_prefix', None)}"
+                )
+                for mw, prio in getattr(bp, "middleware", []) or []:
+                    self.logger.info(
+                        "  " * (indent + 1)
+                        + f"MW(prio={prio}): {getattr(mw, '__name__', repr(mw))}"
+                    )
+                for child, _ in getattr(bp, "children", []) or []:
+                    _bp_tree(child, indent + 1)
+
             for bp in self.blueprints:
                 _bp_tree(bp)
         # List routes and their effective middleware order
         for route in self._all_routes:
-            chain = getattr(route, 'blueprint_chain', []) or []
+            chain = getattr(route, "blueprint_chain", []) or []
             collected: list[tuple[Middleware, int, int, int]] = []
             idx_counter = 0
             for mw, prio in self.middleware:
-                collected.append((mw, prio, 0, idx_counter)); idx_counter += 1
+                collected.append((mw, prio, 0, idx_counter))
+                idx_counter += 1
             depth = 1
             for bp in chain:
-                for mw, prio in getattr(bp, 'middleware', []) or []:
-                    collected.append((mw, prio, depth, idx_counter)); idx_counter += 1
+                for mw, prio in getattr(bp, "middleware", []) or []:
+                    collected.append((mw, prio, depth, idx_counter))
+                    idx_counter += 1
                 depth += 1
             collected.sort(key=lambda t: (-t[1], t[2], t[3]))
             seen_ids: set[int] = set()
@@ -1751,10 +1976,15 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     continue
                 seen_ids.add(id(mw))
                 ordered_stack.append((mw, prio))
-            eff = [getattr(mw, '__name__', repr(mw)) for mw, _ in ordered_stack] + [getattr(mw, '__name__', repr(mw)) for mw, _ in (getattr(route, 'middleware', []) or [])]
-            self.logger.info(f"Route {route.methods or ['WS']} {route.pattern} -> MW order: {eff}")
+            eff = [getattr(mw, "__name__", repr(mw)) for mw, _ in ordered_stack] + [
+                getattr(mw, "__name__", repr(mw))
+                for mw, _ in (getattr(route, "middleware", []) or [])
+            ]
+            self.logger.info(
+                f"Route {route.methods or ['WS']} {route.pattern} -> MW order: {eff}"
+            )
         self.logger.info("=== End Visualization ===")
-    
+
     async def shutdown(self, timeout: float | None = None):
         """Initiate graceful application shutdown with in-flight request handling.
 
@@ -1804,6 +2034,11 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :meth:`on_shutdown`: Register cleanup handlers
             :meth:`start_task_workers`: Background workers
         """
+        with self._shutdown_lock:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+
         self._accepting_requests = False
         to = timeout
         if to is None:
@@ -1815,7 +2050,10 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         try:
             await asyncio.wait_for(self._inflight_zero.wait(), timeout=to)
         except asyncio.TimeoutError:
-            self.logger.warning("Graceful shutdown timeout reached; continuing shutdown with %d in-flight", self._inflight_requests)
+            self.logger.warning(
+                "Graceful shutdown timeout reached; continuing shutdown with %d in-flight",
+                self._inflight_requests,
+            )
         # Run shutdown hooks
         for hook in self._shutdown_hooks:
             if asyncio.iscoroutinefunction(hook):
@@ -1830,6 +2068,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                     self.logger.exception("Error in shutdown hook")
         # Cancel recurring scheduled tasks
         from contextlib import suppress
+
         for t in self._running_scheduled:
             t.cancel()
         if self._running_scheduled:
@@ -1841,7 +2080,45 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             await self.task_queue.shutdown()
         except Exception:
             self.logger.exception("Error shutting down task queue")
-    
+
+    def __rsgi_init__(self, loop):
+        """Granian RSGI lifecycle hook: run startup during worker init."""
+        self._startup_via_granian = True
+        if self._startup_complete:
+            return
+
+        try:
+            if loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._ensure_startup_complete(), loop
+                )
+                fut.result()
+            else:
+                try:
+                    loop.run_until_complete(self._ensure_startup_complete())
+                except RuntimeError:
+                    asyncio.run(self._ensure_startup_complete())
+        except Exception:
+            self.logger.exception("Error during Granian __rsgi_init__ startup")
+            raise
+
+    def __rsgi_del__(self, loop):
+        """Granian RSGI lifecycle hook: run graceful shutdown on worker exit."""
+        if self._shutdown_started:
+            return
+
+        try:
+            if loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(self.shutdown(), loop)
+                fut.result(timeout=30)
+            else:
+                try:
+                    loop.run_until_complete(self.shutdown())
+                except RuntimeError:
+                    asyncio.run(self.shutdown())
+        except Exception:
+            self.logger.exception("Error during Granian __rsgi_del__ shutdown")
+
     async def __rsgi__(self, scope: Scope, protocol):
         """RSGI application entry point called by Granian server.
 
@@ -1890,14 +2167,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         # so the rest of the app can use consistent attribute access.
         if isinstance(scope, dict):
             # The ASGI test client scope doesn't have 'proto', so we add it.
-            scope.setdefault('proto', scope.get('type', 'http'))
+            scope.setdefault("proto", scope.get("type", "http"))
             scope = SimpleNamespace(**scope)
 
-        if scope.proto == 'http':
+        if scope.proto == "http":
             await self._handle_http(scope, protocol)
-        elif scope.proto in ('ws', 'websocket'):
+        elif scope.proto in ("ws", "websocket"):
             await self._handle_websocket(scope, protocol)
-    def _allowed_methods_for_path(self, path: str, is_websocket: bool = False) -> list[str]:
+
+    def _allowed_methods_for_path(
+        self, path: str, is_websocket: bool = False
+    ) -> list[str]:
         """Return list of allowed HTTP methods for a given path.
 
         Determines which HTTP methods are supported for a specific path by checking
@@ -1923,18 +2203,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             return []
         allowed: set[str] = set()
         if self.rust_router_available:
-            try:
+            if self._router_supports_allowed_methods:
                 methods = self.http_router.allowed_methods(path)
                 for m in methods:
                     allowed.add(m)
-            except Exception:
+            else:
                 # Fallback probing if older router doesn't have allowed_methods
-                methods = ['GET','POST','PUT','DELETE','PATCH','OPTIONS']
+                methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
                 for m in methods:
-                    try:
+                    if self._router_supports_params:
                         match = self.http_router.get_with_params(path, m)
-                    except AttributeError:
-                        # Very old router
+                    else:
                         match = self.http_router.get(f"{m}{path}")
                     if match:
                         handler, _ = match
