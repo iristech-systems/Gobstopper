@@ -212,6 +212,13 @@ class RouterMixin:
             else:
                 self.routes.append(handler)
             self._all_routes.append(handler)
+            registry = getattr(self, 'openapi_registry', None)
+            if isinstance(registry, dict):
+                for state in registry.values():
+                    try:
+                        state.invalidate()
+                    except Exception:
+                        pass
             return func
         return decorator
 
@@ -245,6 +252,13 @@ class RouterMixin:
             else:
                 self.routes.append(handler)
             self._all_routes.append(handler)
+            registry = getattr(self, 'openapi_registry', None)
+            if isinstance(registry, dict):
+                for state in registry.values():
+                    try:
+                        state.invalidate()
+                    except Exception:
+                        pass
             return func
         return decorator
 

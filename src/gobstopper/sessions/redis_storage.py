@@ -1,4 +1,4 @@
-# src/wopr/sessions/redis_storage.py
+# src/gobstopper/sessions/redis_storage.py
 import json
 from typing import Optional, Dict, Any, TYPE_CHECKING
 

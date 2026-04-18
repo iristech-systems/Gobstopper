@@ -6,12 +6,21 @@ A **production-ready**, high-performance async web framework built specifically 
 
 **The Magic**: Just like Wonka's magical candy that contains an entire meal in a single piece, Gobstopper wraps RSGI's complexity into a simple interface while delivering everything you need: routing, templates, WebSockets, background tasks, sessions, security, and more.
 
+## 🆕 What is new in 0.5.0 (Unreleased)
+
+- Security and HTTP hardening for body limits, proxy header trust boundaries, and cookie/session invalidation behavior.
+- New cache architecture in `gobstopper.cache` with L1 memory + optional L2 Surreal, plus singleflight and stale-while-revalidate.
+- Environment-driven cache bootstrap via `cache_from_env(...)` and `app.init_cache_from_env()`.
+- Expanded Datastar ergonomics with `datastar_response(...)`, `Request.datastar(...)`, and safer SSE framing/encoding.
+- OpenAPI improvements including blueprint-scoped docs and schema typing fixes for Optional/Union.
+- EDA operations and migration tooling (`gobstopper eda ...` and `gobstopper migrate duckdb-to-surreal`).
+
 ## 🎯 Why Gobstopper?
 
 **Simple Wrapper, Complex Power:**
 - 🍬 **Simple API**: Flask-like simplicity wrapping RSGI's raw performance
 - ⚡️ **RSGI Native**: Direct access to Granian's high-performance RSGI interface
-- 🦀 **Rust-Accelerated**: Optional Rust components for routing, templates, and static files
+- 🦀 **Rust-Accelerated**: Optional Rust components for routing and static files
 - 🔋 **Batteries Included**: Complete framework - background tasks, WebSockets, sessions, and security
 - 🎨 **Familiar Design**: Ergonomic API with modern async/await patterns
 - 📦 **Layered Features**: Start simple, add complexity only when you need it
@@ -35,7 +44,6 @@ A **production-ready**, high-performance async web framework built specifically 
 
 ### 🦀 **Rust-Powered Components**
 - **Rust Router**: High-performance path routing with zero-copy parameter extraction
-- **Rust Templates**: Blazing-fast Jinja2-compatible rendering with streaming support
 - **Rust Static Files**: Ultra-fast static asset serving with intelligent caching
 - **Hybrid Architecture**: Seamless fallback to Python components when Rust unavailable
 
@@ -45,9 +53,16 @@ A **production-ready**, high-performance async web framework built specifically 
 - **High-Performance JSON**: msgspec-powered JSON parsing and serialization (up to 10x faster)
 - **Async/Await**: Full async support throughout the framework stack
 - **Background Tasks**: Intelligent task system with DuckDB persistence, priorities, and retries
+- **EDA Primitives**: In-process dispatcher/store abstractions with DLQ replay tooling
+- **Layered Cache**: L1 in-memory + optional L2 Surreal cache facade with SWR support
 - **WebSocket Support**: Real-time communication with room management and broadcasting
 - **Template Engine**: Jinja2 integration with async support and hot-reload
 - **Middleware System**: Static files, CORS, security, and custom middleware
+
+### 🔄 **Reactive + API Tooling**
+- **Datastar Integration**: `DatastarResponse`, `datastar_response(...)`, and helper APIs for SSE-driven UI updates.
+- **OpenAPI Extension**: App-level and blueprint-scoped spec/docs generation with optional schema validation.
+- **Typed Request Helpers**: `Request.bind(...)`, content negotiation helpers, and Datastar response helpers.
 
 ### 🔒 **Security & Production**
 - **Security First**: CSRF protection, security headers, rate limiting, input validation
@@ -59,7 +74,7 @@ A **production-ready**, high-performance async web framework built specifically 
 - **Mission Control**: Built-in dashboard (`/_gobstopper`) for checking system health, memory usage, and background tasks.
 - **Smart Watcher**: Intelligent file watching that knows about your templates, config, and env files.
 - **Error Prism**: Interactive, rich error pages that make debugging a joy.
-- **Hot Reload**: Fast, reliable reloader that works with Python code and Rust templates.
+- **Hot Reload**: Fast, reliable reloader that works with Python code and templates.
 
 ## 📦 Installation
 
@@ -145,6 +160,16 @@ Visit http://localhost:8000 for interactive demos of:
 - Security features
 - Middleware functionality
 
+### 📡 EDA + Datastar Demo (`example_eda_app.py`)
+Live event processing demo with dashboard updates and operational endpoints:
+
+```bash
+uv sync --extra all
+granian --interface rsgi --reload example_eda_app:app
+```
+
+Visit http://localhost:8000 and http://localhost:8000/openapi
+
 ### 🧩 Blueprints Demo (`blueprints_demo`)
 A blueprint-structured sample app demonstrating nested blueprints, per-blueprint static/templates, WebSockets, background tasks, middleware, and rate limiting.
 
@@ -186,9 +211,12 @@ Benchmark endpoints:
 ```
 src/gobstopper/
 ├── core/           # Main Gobstopper application class
+├── cache.py        # L1/L2 cache contracts and facade
+├── eda/            # Event dispatcher, stores, and bridges
 ├── http/           # Request/Response handling & routing  
 ├── websocket/      # WebSocket support & room management
 ├── tasks/          # Background task system with DuckDB
+├── extensions/     # OpenAPI, Datastar, charts, and more
 ├── templates/      # Jinja2 template engine
 ├── middleware/     # Static files, CORS, security
 ├── cli/            # Command-line tools
@@ -244,7 +272,7 @@ import os
 from gobstopper import should_run_background_workers
 
 # Enable background tasks (required)
-os.environ["WOPR_TASKS_ENABLED"] = "1"
+os.environ["GOBSTOPPER_TASKS_ENABLED"] = "1"
 
 @app.task("send_email", "notifications")
 async def send_email(to: str, subject: str):
@@ -262,6 +290,46 @@ task_id = await app.add_background_task(
 async def startup():
     if should_run_background_workers():
         await app.start_task_workers("notifications", worker_count=2)
+```
+
+### Caching (L1 + optional L2 Surreal)
+
+```python
+from gobstopper import Gobstopper
+
+app = Gobstopper(__name__)
+
+# Reads GOBSTOPPER_CACHE_* env vars and wires app.cache
+cache = app.init_cache_from_env()
+
+async def compute_expensive():
+    return {"value": 42}
+
+@app.get("/slow")
+async def slow_endpoint(request):
+    data = await cache.get_or_set("slow:data", ttl=30, factory=compute_expensive)
+    return {"data": data}
+```
+
+### Datastar Responses
+
+```python
+from gobstopper.extensions.datastar import Datastar, datastar_response
+
+@app.post("/ui/increment")
+async def increment(request):
+    return datastar_response(
+        Datastar.merge_fragments('<div id="count">42</div>', selector="#count")
+    )
+```
+
+### OpenAPI (App + Blueprint Scopes)
+
+```python
+from gobstopper.extensions.openapi import attach_openapi, attach_openapi_blueprint
+
+attach_openapi(app, title="My API", version="0.5.0")
+attach_openapi_blueprint(app, api_bp, path="/api/openapi.json")
 ```
 
 ### WebSocket
@@ -338,6 +406,9 @@ Gobstopper includes a comprehensive CLI for rapid development and project manage
 ```bash
 # Basic usage (Flask-like interface)
 gobstopper run
+
+# Module entrypoint support
+python -m gobstopper run
 
 # With auto-reload for development
 gobstopper run --reload
@@ -561,6 +632,12 @@ For more details, see the [Middleware documentation](./docs/core/middleware.md#s
 
 **Note**: The default file-based session storage is not recommended for production, especially in cloud or containerized environments. Use Redis or PostgreSQL for production deployments.
 
+### Multi-worker Storage Guidance
+
+- Embedded/local writable stores (for example DuckDB files or embedded Surreal URLs like `surrealkv://...`) are best for single-worker/dev usage.
+- For multi-worker production, use shared network backends for writable state (for example remote Surreal via `ws://`, `wss://`, `http://`, or `https://`).
+- Remote Surreal cache configuration requires credentials: set `GOBSTOPPER_CACHE_SURREAL_TOKEN` or `GOBSTOPPER_CACHE_SURREAL_USERNAME` + `GOBSTOPPER_CACHE_SURREAL_PASSWORD`.
+
 ## ⚡ Performance
 
 - **RSGI Interface**: Maximum performance with Granian server
@@ -622,16 +699,16 @@ Gobstopper includes Rust extensions for maximum performance. Build tools are pro
 uv add --dev maturin build
 
 # 1) Fast dev install of Rust core into your current venv (recommended while iterating)
-#    Defaults to features: router,templates,static
+#    Defaults to features: router,static
 uv run python dev_install_rust.py --strip
 # or explicitly:
-MATURIN_FEATURES="router,templates,static" uv run python dev_install_rust.py --strip
+MATURIN_FEATURES="router,static" uv run python dev_install_rust.py --strip
 
 # 2) Build wheels for the current platform (drops wheels in ./dist)
-python build_wheels.py --platform local --features "router,templates,static"
+python build_wheels.py --platform local --features "router,static"
 
 # 3) Build Linux manylinux wheels for both x86_64 and aarch64 (requires Docker)
-python build_wheels.py --platform linux --arch both --features "router,templates,static"
+python build_wheels.py --platform linux --arch both --features "router,static"
 
 # 4) Build for all platforms
 ./build_linux_wheels.sh
@@ -641,7 +718,6 @@ To verify the Rust core is active at runtime, look for these logs on startup:
 
 ```
 🚀 Found Rust extensions, using high-performance router.
-🦀 Rust template engine initialized successfully
 ```
 
 You can also run:

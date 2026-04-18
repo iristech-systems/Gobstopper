@@ -69,6 +69,7 @@ class TaskStatus(Enum):
         RETRY is a transient state - tasks in RETRY status are automatically
         requeued as PENDING after an exponential backoff delay.
     """
+
     PENDING = "pending"
     STARTED = "started"
     SUCCESS = "success"
@@ -117,6 +118,7 @@ class TaskPriority(Enum):
         Tasks with the same priority are processed in FIFO order.
         Priority only affects ordering within a category queue.
     """
+
     LOW = 1
     NORMAL = 2
     HIGH = 3
@@ -187,6 +189,7 @@ class TaskInfo(Struct, kw_only=True):
         - The result field can store any JSON-serializable data.
         - Progress tracking is optional; tasks work fine with progress=0.0.
     """
+
     id: str
     name: str
     category: str
@@ -200,11 +203,20 @@ class TaskInfo(Struct, kw_only=True):
     error: Optional[str] = None
     retry_count: int = 0
     max_retries: int = 0
+    attempt: int = 0
+    max_attempts: int = 1
+    idempotency_key: Optional[str] = None
+    not_before: Optional[datetime] = None
+    next_attempt_at: Optional[datetime] = None
+    lease_owner: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    claimed_at: Optional[datetime] = None
+    last_heartbeat_at: Optional[datetime] = None
     args: tuple = ()
     kwargs: dict = field(default_factory=dict)
     progress: float = 0.0
     progress_message: str = ""
-    
+
     @property
     def is_running(self) -> bool:
         """Check if the task is currently being executed.
@@ -251,4 +263,8 @@ class TaskInfo(Struct, kw_only=True):
             RETRY status is not considered completed - the task will be
             requeued automatically.
         """
-        return self.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        return self.status in (
+            TaskStatus.SUCCESS,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        )

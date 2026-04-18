@@ -8,7 +8,8 @@ This module provides the core task queue system for Gobstopper, featuring:
 - Feature flag control via environment variable
 
 The task system is disabled by default and must be explicitly enabled
-via the WOPR_TASKS_ENABLED environment variable or constructor parameter.
+via the GOBSTOPPER_TASKS_ENABLED environment variable (legacy
+WOPR_TASKS_ENABLED supported) or constructor parameter.
 This prevents accidental database creation and resource usage.
 
 Classes:
@@ -23,7 +24,7 @@ Example:
         import os
 
         # Enable tasks
-        os.environ["WOPR_TASKS_ENABLED"] = "1"
+        os.environ["GOBSTOPPER_TASKS_ENABLED"] = "1"
 
         # Create queue
         queue = TaskQueue(enabled=True)
@@ -55,8 +56,8 @@ Example:
         await queue.shutdown()
 
 Environment Variables:
-    WOPR_TASKS_ENABLED: Set to "1", "true", "True", or "yes" to enable
-        the task system. Defaults to disabled.
+    GOBSTOPPER_TASKS_ENABLED: Set to "1", "true", "True", or "yes" to enable
+        the task system. Defaults to disabled. Legacy WOPR_TASKS_ENABLED supported.
 
 Note:
     - Tasks are disabled by default to prevent unintended side effects
@@ -70,13 +71,15 @@ import asyncio
 import os
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
 from .models import TaskInfo, TaskStatus, TaskPriority
 
 # Feature flag: tasks disabled by default unless explicitly enabled
-_DEFAULT_ENABLED = os.getenv("WOPR_TASKS_ENABLED", "0") in {"1", "true", "True", "yes"}
+_DEFAULT_ENABLED = os.getenv(
+    "GOBSTOPPER_TASKS_ENABLED", os.getenv("WOPR_TASKS_ENABLED", "0")
+) in {"1", "true", "True", "yes"}
 
 
 def should_run_background_workers() -> bool:
@@ -110,21 +113,24 @@ def should_run_background_workers() -> bool:
         Manual override for testing::
 
             # Force enable workers
-            os.environ["WOPR_FORCE_WORKERS"] = "1"
+            os.environ["GOBSTOPPER_FORCE_WORKERS"] = "1"
             assert should_run_background_workers() == True
 
             # Force disable workers
-            os.environ["WOPR_FORCE_WORKERS"] = "0"
+            os.environ["GOBSTOPPER_FORCE_WORKERS"] = "0"
             assert should_run_background_workers() == False
 
     Note:
         - Returns True if no multi-process server is detected (single process mode)
-        - Can be overridden with WOPR_FORCE_WORKERS environment variable
+        - Can be overridden with GOBSTOPPER_FORCE_WORKERS environment variable
+          (legacy WOPR_FORCE_WORKERS supported)
         - Only relevant when using DuckDB storage (concurrency limitation)
         - With Redis/PostgreSQL storage, all workers can safely process tasks
     """
     # Allow explicit override for testing or special deployments
-    force_workers = os.getenv("WOPR_FORCE_WORKERS")
+    force_workers = os.getenv(
+        "GOBSTOPPER_FORCE_WORKERS", os.getenv("WOPR_FORCE_WORKERS")
+    )
     if force_workers is not None:
         return force_workers in {"1", "true", "True", "yes"}
 
@@ -173,6 +179,7 @@ class NoopStorage:
         - No exceptions are raised
         - Used internally by TaskQueue when enabled=False
     """
+
     def save_task(self, task_info: TaskInfo):
         """No-op: task is not saved."""
         return
@@ -184,6 +191,26 @@ class NoopStorage:
     def get_tasks(self, **kwargs):
         """No-op: always returns empty list."""
         return []
+
+    def get_task_by_idempotency_key(self, idempotency_key: str):
+        """No-op: always returns None."""
+        return None
+
+    def claim_next(
+        self, category: str, worker_id: str, now: datetime, lease_seconds: int
+    ):
+        """No-op: always returns None."""
+        return None
+
+    def renew_lease(
+        self, task_id: str, worker_id: str, now: datetime, lease_seconds: int
+    ) -> bool:
+        """No-op: always returns False."""
+        return False
+
+    def reclaim_expired_leases(self, now: datetime, limit: int = 1000) -> int:
+        """No-op: always returns 0."""
+        return 0
 
     def cleanup_old_tasks(self, **kwargs):
         """No-op: always returns 0 deleted."""
@@ -203,7 +230,7 @@ class TaskQueue:
     - Task cancellation and manual retry support
 
     The queue system is disabled by default and must be explicitly enabled
-    via environment variable (WOPR_TASKS_ENABLED=1) or constructor parameter.
+    via environment variable (GOBSTOPPER_TASKS_ENABLED=1) or constructor parameter.
     Storage is created lazily on first use to avoid unnecessary database files.
 
     Attributes:
@@ -292,7 +319,8 @@ class TaskQueue:
 
         Args:
             enabled: Whether to enable the task system. If None, reads from
-                WOPR_TASKS_ENABLED environment variable. Defaults to disabled.
+                GOBSTOPPER_TASKS_ENABLED environment variable. Defaults to disabled
+                (legacy WOPR_TASKS_ENABLED supported).
             storage_factory: Optional factory function to create custom storage.
                 If None, uses TaskStorage with DuckDB. Useful for testing.
 
@@ -301,7 +329,7 @@ class TaskQueue:
 
                 # Use environment variable
                 import os
-                os.environ["WOPR_TASKS_ENABLED"] = "1"
+                os.environ["GOBSTOPPER_TASKS_ENABLED"] = "1"
                 queue1 = TaskQueue()  # enabled=True from env
 
                 # Explicitly enable
@@ -327,7 +355,7 @@ class TaskQueue:
         # Lazy storage: created on first access only if enabled
         self._storage = None
         self._storage_factory = storage_factory
-    
+
     @property
     def storage(self):
         """Get the storage backend, creating it lazily if needed.
@@ -354,17 +382,25 @@ class TaskQueue:
             else:
                 try:
                     from .storage import TaskStorage  # local import
+
                     self._storage = TaskStorage()
                 except ImportError:
                     # Fallback to NoopStorage if DuckDB is missing
                     # but tasks were explicitly enabled
                     from loguru import logger
-                    logger.warning("⚠️ DuckDB is required for task storage but not installed.")
-                    logger.info("💡 Run 'uv add duckdb' to enable persistent background tasks.")
-                    logger.info("⏭️  Falling back to NoopStorage (tasks will be non-persistent)")
+
+                    logger.warning(
+                        "⚠️ DuckDB is required for task storage but not installed."
+                    )
+                    logger.info(
+                        "💡 Run 'uv add duckdb' to enable persistent background tasks."
+                    )
+                    logger.info(
+                        "⏭️  Falling back to NoopStorage (tasks will be non-persistent)"
+                    )
                     self._storage = NoopStorage()
         return self._storage
-    
+
     def register_task(self, name: str, category: str = "default"):
         """Decorator to register a task function with the queue.
 
@@ -409,16 +445,26 @@ class TaskQueue:
             - Both sync and async functions are supported
             - The original function is returned unchanged (can be called directly)
         """
+
         def decorator(func):
             self.task_functions[name] = func
             return func
+
         return decorator
-    
-    async def add_task(self, name: str, category: str = "default",
-                      priority: TaskPriority = TaskPriority.NORMAL,
-                      max_retries: int = 0,
-                      skip_worker_check: bool = False,
-                      *args, **kwargs) -> str:
+
+    async def add_task(
+        self,
+        name: str,
+        category: str = "default",
+        priority: TaskPriority = TaskPriority.NORMAL,
+        max_retries: int = 0,
+        *args,
+        run_at: datetime | None = None,
+        delay_seconds: float | None = None,
+        idempotency_key: str | None = None,
+        skip_worker_check: bool = False,
+        **kwargs,
+    ) -> str:
         """Add a task to the queue for execution.
 
         Creates a TaskInfo object with a unique ID, saves it to storage,
@@ -484,7 +530,9 @@ class TaskQueue:
             - Workers must be started for the category to process tasks
         """
         if not self.enabled:
-            raise RuntimeError("TaskQueue is disabled. Set WOPR_TASKS_ENABLED=1 to enable.")
+            raise RuntimeError(
+                "TaskQueue is disabled. Set GOBSTOPPER_TASKS_ENABLED=1 to enable."
+            )
 
         # Check if we should queue tasks in this process
         # Only the main worker should interact with DuckDB to avoid lock conflicts
@@ -498,22 +546,37 @@ class TaskQueue:
 
         if name not in self.task_functions:
             raise ValueError(f"Task '{name}' not registered")
-        
+
+        if idempotency_key:
+            existing = self.storage.get_task_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                return existing.id
+
+        not_before = run_at
+        if delay_seconds is not None:
+            not_before = datetime.now() + timedelta(seconds=max(0.0, delay_seconds))
+
+        max_attempts = max_retries + 1
+
         task_info = TaskInfo(
-            id=str(uuid.uuid4()), name=name, category=category,
-            priority=priority, status=TaskStatus.PENDING,
-            created_at=datetime.now(), max_retries=max_retries,
-            args=args, kwargs=kwargs
+            id=str(uuid.uuid4()),
+            name=name,
+            category=category,
+            priority=priority,
+            status=TaskStatus.PENDING,
+            created_at=datetime.now(),
+            max_retries=max_retries,
+            max_attempts=max_attempts,
+            idempotency_key=idempotency_key,
+            not_before=not_before,
+            next_attempt_at=not_before,
+            args=args,
+            kwargs=kwargs,
         )
-        
+
         self.storage.save_task(task_info)
-        
-        if category not in self.queues:
-            self.queues[category] = asyncio.PriorityQueue()
-        
-        await self.queues[category].put((-priority.value, task_info.id, task_info))
         return task_info.id
-    
+
     async def get_task_info(self, task_id: str) -> Optional[TaskInfo]:
         """Retrieve task information and current status.
 
@@ -560,10 +623,10 @@ class TaskQueue:
         # Check running tasks first
         if task_id in self.running_tasks:
             return self.running_tasks[task_id]
-        
+
         # Check storage
         return self.storage.get_task(task_id)
-    
+
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a pending task before execution.
 
@@ -603,15 +666,16 @@ class TaskQueue:
         task_info = await self.get_task_info(task_id)
         if not task_info:
             return False
-        
+
         if task_info.status == TaskStatus.PENDING:
             task_info.status = TaskStatus.CANCELLED
             task_info.completed_at = datetime.now()
+            task_info.next_attempt_at = None
             self.storage.save_task(task_info)
             return True
-        
+
         return False
-    
+
     async def retry_task(self, task_id: str) -> bool:
         """Manually retry a failed task.
 
@@ -656,7 +720,7 @@ class TaskQueue:
         task_info = await self.get_task_info(task_id)
         if not task_info or task_info.status != TaskStatus.FAILED:
             return False
-        
+
         # Reset task status and re-queue
         task_info.status = TaskStatus.PENDING
         task_info.started_at = None
@@ -664,17 +728,15 @@ class TaskQueue:
         task_info.error = None
         task_info.progress = 0.0
         task_info.progress_message = ""
-        
+        task_info.next_attempt_at = datetime.now()
+        task_info.lease_owner = None
+        task_info.lease_expires_at = None
+        task_info.claimed_at = None
+        task_info.last_heartbeat_at = None
+
         self.storage.save_task(task_info)
-        
-        if task_info.category not in self.queues:
-            self.queues[task_info.category] = asyncio.PriorityQueue()
-        
-        await self.queues[task_info.category].put(
-            (-task_info.priority.value, task_info.id, task_info)
-        )
         return True
-    
+
     async def get_task_stats(self) -> dict:
         """Get aggregate statistics about tasks across all categories.
 
@@ -714,57 +776,54 @@ class TaskQueue:
             - queued count is sum of all category queues
         """
         if not self.enabled:
-            return {"total": 0, "by_status": {}, "by_category": {}, "running": 0, "queued": 0}
+            return {
+                "total": 0,
+                "by_status": {},
+                "by_category": {},
+                "running": 0,
+                "queued": 0,
+            }
         all_tasks = self.storage.get_tasks(limit=1000)  # Get recent tasks
-        
+
         stats = {
             "total": len(all_tasks),
             "by_status": defaultdict(int),
             "by_category": defaultdict(int),
             "running": len(self.running_tasks),
-            "queued": sum(queue.qsize() for queue in self.queues.values())
+            "queued": 0,
         }
-        
+
         for task in all_tasks:
             stats["by_status"][task.status.value] += 1
             stats["by_category"][task.category] += 1
-        
+            if task.status in (TaskStatus.PENDING, TaskStatus.RETRY):
+                stats["queued"] += 1
+
         return dict(stats)
-    
+
     async def recover_tasks(self, category: str):
         """Recover pending tasks from storage and re-queue them.
-        
+
         Queries the storage for any tasks in PENDING status for the given
         category and adds them back to the in-memory queue. This ensures
         tasks that were queued but not processed before a shutdown/restart
         are not lost.
-        
+
         Args:
             category: The category to recover tasks for.
         """
         if not self.enabled:
             return
 
-        # Get all pending tasks for this category
-        pending_tasks = self.storage.get_tasks(
-            category=category,
-            status=TaskStatus.PENDING,
-            limit=1000  # Reasonable limit for recovery
-        )
-        
-        for task in pending_tasks:
-            # Check if already in queue/running to avoid duplicates
-            # (though normally memory queue is empty on start)
-            if task.id not in self.running_tasks:
-                if category not in self.queues:
-                    self.queues[category] = asyncio.PriorityQueue()
-                
-                # Add to queue
-                await self.queues[category].put(
-                    (-task.priority.value, task.id, task)
-                )
+        # Reclaim orphaned STARTED tasks whose leases have expired.
+        self.storage.reclaim_expired_leases(datetime.now(), limit=1000)
 
-    async def start_workers(self, category: str, worker_count: int = 1):
+    async def start_workers(
+        self,
+        category: str,
+        worker_count: int = 1,
+        skip_worker_check: bool = False,
+    ):
         """Start worker tasks to process tasks in a category queue.
 
         Creates and starts async worker tasks that continuously poll the
@@ -802,17 +861,26 @@ class TaskQueue:
         """
         if not self.enabled:
             return
-        
+
+        if not skip_worker_check and not should_run_background_workers():
+            from loguru import logger
+
+            logger.info(
+                "Skipping task workers for category '{}' in non-primary worker",
+                category,
+            )
+            return
+
         # Recover any pending tasks from storage before starting workers
         await self.recover_tasks(category)
 
         if category not in self.workers:
             self.workers[category] = []
-        
+
         for i in range(worker_count):
             worker = asyncio.create_task(self._worker(category, i))
             self.workers[category].append(worker)
-    
+
     async def shutdown(self):
         """Shutdown all workers gracefully, completing current tasks.
 
@@ -847,16 +915,16 @@ class TaskQueue:
         if not self.enabled:
             return
         self.shutdown_event.set()
-        
+
         # Cancel all workers
         for workers in self.workers.values():
             for worker in workers:
                 worker.cancel()
-        
+
         # Wait for workers to finish
         for workers in self.workers.values():
             await asyncio.gather(*workers, return_exceptions=True)
-    
+
     async def _worker(self, category: str, worker_id: int):
         """Worker coroutine that continuously processes tasks from a category queue.
 
@@ -884,26 +952,31 @@ class TaskQueue:
             4. Handle any exceptions and continue
             5. Exit when shutdown_event is set or cancelled
         """
-        if category not in self.queues:
-            self.queues[category] = asyncio.PriorityQueue()
-        
-        queue = self.queues[category]
-        
+        worker_token = f"{category}-{worker_id}-{os.getpid()}"
+        lease_seconds = 30
+
         while not self.shutdown_event.is_set():
             try:
-                try:
-                    priority, task_id, task_info = await asyncio.wait_for(queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                task_info = self.storage.claim_next(
+                    category,
+                    worker_token,
+                    datetime.now(),
+                    lease_seconds,
+                )
+                if task_info is None:
+                    await asyncio.sleep(0.2)
                     continue
-                
-                await self._execute_task(task_info)
-                
+
+                await self._execute_task(task_info, worker_token, lease_seconds)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"Worker {category}-{worker_id} error: {e}")
-    
-    async def _execute_task(self, task_info: TaskInfo):
+
+    async def _execute_task(
+        self, task_info: TaskInfo, worker_token: str, lease_seconds: int
+    ):
         """Execute a single task with retry logic and error handling.
 
         Internal method that handles the complete task execution lifecycle:
@@ -961,40 +1034,79 @@ class TaskQueue:
             task_info.completed_at = datetime.now()
             self.storage.save_task(task_info)
             return
-        
-        task_info.status = TaskStatus.STARTED
-        task_info.started_at = datetime.now()
+
         self.running_tasks[task_info.id] = task_info
-        self.storage.save_task(task_info)
-        
+
+        stop_heartbeat = asyncio.Event()
+
+        async def _heartbeat_loop():
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(max(1, lease_seconds // 3))
+                self.storage.renew_lease(
+                    task_info.id,
+                    worker_token,
+                    datetime.now(),
+                    lease_seconds,
+                )
+
+        heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
         try:
             if asyncio.iscoroutinefunction(task_func):
                 result = await task_func(*task_info.args, **task_info.kwargs)
             else:
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: task_func(*task_info.args, **task_info.kwargs))
-            
+                result = await loop.run_in_executor(
+                    None, lambda: task_func(*task_info.args, **task_info.kwargs)
+                )
+
             task_info.status = TaskStatus.SUCCESS
             task_info.result = result
             task_info.completed_at = datetime.now()
-            task_info.elapsed_seconds = (task_info.completed_at - task_info.started_at).total_seconds()
+            task_info.elapsed_seconds = (
+                task_info.completed_at - task_info.started_at
+            ).total_seconds()
             task_info.progress = 100.0
-            
+            task_info.next_attempt_at = None
+            task_info.lease_owner = None
+            task_info.lease_expires_at = None
+            task_info.claimed_at = None
+            task_info.last_heartbeat_at = None
+
         except Exception as e:
             task_info.error = str(e)
             task_info.retry_count += 1
-            
-            if task_info.retry_count <= task_info.max_retries:
+            task_info.attempt = task_info.retry_count
+
+            effective_max_attempts = max(
+                task_info.max_attempts, task_info.max_retries + 1
+            )
+            if task_info.attempt < effective_max_attempts:
                 task_info.status = TaskStatus.RETRY
-                await asyncio.sleep(min(2 ** task_info.retry_count, 60))
-                queue = self.queues[task_info.category]
-                await queue.put((-task_info.priority.value, task_info.id, task_info))
+                backoff_seconds = min(2**task_info.retry_count, 60)
+                task_info.next_attempt_at = datetime.now() + timedelta(
+                    seconds=backoff_seconds
+                )
+                task_info.lease_owner = None
+                task_info.lease_expires_at = None
+                task_info.claimed_at = None
+                task_info.last_heartbeat_at = None
             else:
                 task_info.status = TaskStatus.FAILED
                 task_info.completed_at = datetime.now()
-                task_info.elapsed_seconds = (task_info.completed_at - task_info.started_at).total_seconds()
-        
+                task_info.elapsed_seconds = (
+                    task_info.completed_at - task_info.started_at
+                ).total_seconds()
+                task_info.next_attempt_at = None
+                task_info.lease_owner = None
+                task_info.lease_expires_at = None
+                task_info.claimed_at = None
+                task_info.last_heartbeat_at = None
+
         finally:
+            stop_heartbeat.set()
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
             # Save to storage BEFORE removing from running_tasks to avoid race condition
             # where get_task_info() checks running_tasks (not found) then storage (not yet saved)
             self.storage.save_task(task_info)

@@ -274,3 +274,67 @@ class ChartExtension:
             theme=theme or self.default_theme,
             **kwargs,
         )
+
+
+def chart_runtime_script(cdn_url: str = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"):
+    """Return a safe HTML fragment with lightweight chart runtime helpers.
+
+    Exposes ``window.GobstopperCharts`` in the browser:
+    - ``ensure(id)``
+    - ``setOption(id, option)``
+    - ``fetchAndSet(id, url, key='option')``
+    """
+    from gobstopper.html import raw_html
+
+    script_html = f"""
+<script type="text/javascript" src="{cdn_url}"></script>
+<script>
+(function () {{
+  if (window.GobstopperCharts) return;
+  const _instances = new Map();
+
+  function _getByPath(obj, path) {{
+    if (!path) return obj;
+    const parts = String(path).split('.');
+    let cur = obj;
+    for (const part of parts) {{
+      if (cur == null) return null;
+      cur = cur[part];
+    }}
+    return cur;
+  }}
+
+  function ensure(id) {{
+    const el = document.getElementById(id);
+    if (!el || typeof echarts === 'undefined') return null;
+    let chart = _instances.get(id);
+    if (!chart || chart.isDisposed()) {{
+      chart = echarts.init(el);
+      _instances.set(id, chart);
+      window.addEventListener('resize', function () {{
+        const c = _instances.get(id);
+        if (c && !c.isDisposed()) c.resize();
+      }});
+    }}
+    return chart;
+  }}
+
+  function setOption(id, option) {{
+    const chart = ensure(id);
+    if (!chart) return false;
+    chart.setOption(option || {{}}, true);
+    return true;
+  }}
+
+  async function fetchAndSet(id, url, key) {{
+    const response = await fetch(url);
+    const data = await response.json();
+    const option = _getByPath(data, key || 'option') || {{}};
+    return setOption(id, option);
+  }}
+
+  window.GobstopperCharts = {{ ensure, setOption, fetchAndSet }};
+}})();
+</script>
+"""
+    return raw_html(script_html)

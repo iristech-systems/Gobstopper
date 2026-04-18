@@ -61,6 +61,7 @@ from .models import TaskInfo, TaskStatus, TaskPriority
 
 try:
     import duckdb
+
     DUCKDB_AVAILABLE = True
 except ImportError:
     DUCKDB_AVAILABLE = False
@@ -127,12 +128,12 @@ class TaskStorage:
         - JSON fields (args, kwargs, result) support any JSON-serializable data
     """
 
-    def __init__(self, db_path: Union[str, Path] = "wopr_tasks.duckdb"):
+    def __init__(self, db_path: Union[str, Path] = "gobstopper_tasks.duckdb"):
         """Initialize TaskStorage with a database path.
 
         Args:
             db_path: Path to the DuckDB database file. Can be relative or
-                absolute. Defaults to "wopr_tasks.duckdb" in current directory.
+                absolute. Defaults to "gobstopper_tasks.duckdb" in current directory.
 
         Raises:
             ImportError: If DuckDB package is not installed.
@@ -143,11 +144,13 @@ class TaskStorage:
             side effects.
         """
         if not DUCKDB_AVAILABLE:
-            raise ImportError("DuckDB is required for task storage. Install: uv add duckdb")
+            raise ImportError(
+                "DuckDB is required for task storage. Install: uv add duckdb"
+            )
 
         self.db_path = Path(db_path)
         self.connection = None  # Lazy connection; do not touch DB until first use
-    
+
     def _init_database(self):
         """Initialize database connection, schema, and indexes.
 
@@ -182,7 +185,7 @@ class TaskStorage:
                 "2) Using a shared storage backend (Redis/PostgreSQL), or "
                 "3) Running with a single worker process."
             ) from e
-        
+
         self.connection.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id VARCHAR PRIMARY KEY,
@@ -198,23 +201,53 @@ class TaskStorage:
                 error TEXT,
                 retry_count INTEGER DEFAULT 0,
                 max_retries INTEGER DEFAULT 0,
+                attempt INTEGER DEFAULT 0,
+                max_attempts INTEGER DEFAULT 1,
+                idempotency_key VARCHAR,
+                not_before TIMESTAMP,
+                next_attempt_at TIMESTAMP,
+                lease_owner VARCHAR,
+                lease_expires_at TIMESTAMP,
+                claimed_at TIMESTAMP,
+                last_heartbeat_at TIMESTAMP,
                 args JSON,
                 kwargs JSON,
                 progress DOUBLE DEFAULT 0.0,
                 progress_message VARCHAR DEFAULT ''
             )
         """)
-        
+
         # Create indexes for performance
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)",
             "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
             "CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)",
-            "CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)"
+            "CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_next_attempt ON tasks(next_attempt_at)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(idempotency_key)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_lease_expires ON tasks(lease_expires_at)",
         ]
         for idx in indexes:
             self.connection.execute(idx)
-    
+
+        # Best-effort additive migration for existing databases
+        migrations = [
+            "ALTER TABLE tasks ADD COLUMN attempt INTEGER DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN max_attempts INTEGER DEFAULT 1",
+            "ALTER TABLE tasks ADD COLUMN idempotency_key VARCHAR",
+            "ALTER TABLE tasks ADD COLUMN not_before TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN lease_owner VARCHAR",
+            "ALTER TABLE tasks ADD COLUMN lease_expires_at TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN claimed_at TIMESTAMP",
+            "ALTER TABLE tasks ADD COLUMN last_heartbeat_at TIMESTAMP",
+        ]
+        for ddl in migrations:
+            try:
+                self.connection.execute(ddl)
+            except Exception:
+                pass
+
     def save_task(self, task_info: TaskInfo):
         """Save or update task information in the database.
 
@@ -256,27 +289,40 @@ class TaskStorage:
         self._init_database()
         # Convert msgspec.Struct to dict (TaskInfo is not a dataclass)
         task_dict = msgspec.structs.asdict(task_info)
-        
+
         # Convert datetime objects to ISO strings
-        for key in ['created_at', 'started_at', 'completed_at']:
+        for key in [
+            "created_at",
+            "started_at",
+            "completed_at",
+            "not_before",
+            "next_attempt_at",
+            "lease_expires_at",
+            "claimed_at",
+            "last_heartbeat_at",
+        ]:
             if task_dict[key]:
                 task_dict[key] = task_dict[key].isoformat()
-        
-        task_dict['priority'] = task_info.priority.value
-        task_dict['status'] = task_info.status.value
-        task_dict['args'] = json.dumps(task_dict['args'])
-        task_dict['kwargs'] = json.dumps(task_dict['kwargs'])
-        task_dict['result'] = json.dumps(task_dict['result'])
+
+        task_dict["priority"] = task_info.priority.value
+        task_dict["status"] = task_info.status.value
+        task_dict["args"] = json.dumps(task_dict["args"])
+        task_dict["kwargs"] = json.dumps(task_dict["kwargs"])
+        task_dict["result"] = json.dumps(task_dict["result"])
 
         values_tuple = tuple(task_dict.values())
 
         # Use explicit INSERT with ON CONFLICT to properly update all columns
         # INSERT OR REPLACE was not updating columns correctly in DuckDB
-        self.connection.execute("""
+        self.connection.execute(
+            """
             INSERT INTO tasks (
                 id, name, category, priority, status, created_at, started_at, completed_at,
-                elapsed_seconds, result, error, retry_count, max_retries, args, kwargs, progress, progress_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                elapsed_seconds, result, error, retry_count, max_retries,
+                attempt, max_attempts, idempotency_key, not_before, next_attempt_at,
+                lease_owner, lease_expires_at, claimed_at, last_heartbeat_at,
+                args, kwargs, progress, progress_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 category = EXCLUDED.category,
@@ -290,14 +336,25 @@ class TaskStorage:
                 error = EXCLUDED.error,
                 retry_count = EXCLUDED.retry_count,
                 max_retries = EXCLUDED.max_retries,
+                attempt = EXCLUDED.attempt,
+                max_attempts = EXCLUDED.max_attempts,
+                idempotency_key = EXCLUDED.idempotency_key,
+                not_before = EXCLUDED.not_before,
+                next_attempt_at = EXCLUDED.next_attempt_at,
+                lease_owner = EXCLUDED.lease_owner,
+                lease_expires_at = EXCLUDED.lease_expires_at,
+                claimed_at = EXCLUDED.claimed_at,
+                last_heartbeat_at = EXCLUDED.last_heartbeat_at,
                 args = EXCLUDED.args,
                 kwargs = EXCLUDED.kwargs,
                 progress = EXCLUDED.progress,
                 progress_message = EXCLUDED.progress_message
-        """, values_tuple)
+        """,
+            values_tuple,
+        )
         # Explicitly commit the transaction to ensure changes are persisted
         self.connection.commit()
-    
+
     def get_task(self, task_id: str) -> Optional[TaskInfo]:
         """Retrieve a single task by its unique ID.
 
@@ -326,14 +383,16 @@ class TaskStorage:
         result = self.connection.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
-        
+
         return self._row_to_task_info(result) if result else None
-    
-    def get_tasks(self,
-                  category: Optional[str] = None,
-                  status: Optional[TaskStatus] = None,
-                  limit: int = 100,
-                  offset: int = 0) -> List[TaskInfo]:
+
+    def get_tasks(
+        self,
+        category: Optional[str] = None,
+        status: Optional[TaskStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[TaskInfo]:
         """Query tasks with optional filtering and pagination.
 
         Retrieves multiple tasks from storage with optional filters on category
@@ -387,22 +446,157 @@ class TaskStorage:
         self._init_database()
         query = "SELECT * FROM tasks WHERE 1=1"
         params = []
-        
+
         if category:
             query += " AND category = ?"
             params.append(category)
-        
+
         if status:
             query += " AND status = ?"
             params.append(status.value)
-        
+
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        
+
         results = self.connection.execute(query, params).fetchall()
         return [self._row_to_task_info(row) for row in results]
-    
-    def cleanup_old_tasks(self, days: int = None, months: int = None, years: int = None):
+
+    def get_task_by_idempotency_key(self, idempotency_key: str) -> Optional[TaskInfo]:
+        """Return most recent task matching idempotency key."""
+        self._init_database()
+        row = self.connection.execute(
+            "SELECT * FROM tasks WHERE idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        return self._row_to_task_info(row) if row else None
+
+    def claim_next(
+        self,
+        category: str,
+        worker_id: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> Optional[TaskInfo]:
+        """Claim the next ready task for a worker lease window."""
+        self._init_database()
+        now_iso = now.isoformat()
+        lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+
+        self.connection.execute("BEGIN TRANSACTION")
+        try:
+            row = self.connection.execute(
+                """
+                SELECT id
+                FROM tasks
+                WHERE category = ?
+                  AND status IN ('pending', 'retry')
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                  AND (not_before IS NULL OR not_before <= ?)
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                ORDER BY COALESCE(next_attempt_at, not_before, created_at) ASC,
+                         priority DESC,
+                         created_at ASC
+                LIMIT 1
+                """,
+                (category, now_iso, now_iso, now_iso),
+            ).fetchone()
+
+            if not row:
+                self.connection.execute("COMMIT")
+                return None
+
+            task_id = row[0]
+            self.connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'started',
+                    attempt = COALESCE(attempt, 0) + 1,
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    claimed_at = COALESCE(claimed_at, ?),
+                    last_heartbeat_at = ?,
+                    started_at = ?,
+                    next_attempt_at = NULL
+                WHERE id = ?
+                  AND status IN ('pending', 'retry')
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                """,
+                (
+                    worker_id,
+                    lease_expires,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                    task_id,
+                    now_iso,
+                ),
+            )
+
+            claimed = self.connection.execute(
+                "SELECT * FROM tasks WHERE id = ? AND lease_owner = ?",
+                (task_id, worker_id),
+            ).fetchone()
+
+            self.connection.execute("COMMIT")
+            return self._row_to_task_info(claimed) if claimed else None
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def renew_lease(
+        self,
+        task_id: str,
+        worker_id: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
+        """Extend lease for an in-flight task owned by worker."""
+        self._init_database()
+        now_iso = now.isoformat()
+        lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        self.connection.execute(
+            """
+            UPDATE tasks
+            SET lease_expires_at = ?, last_heartbeat_at = ?
+            WHERE id = ? AND lease_owner = ? AND status = 'started'
+            """,
+            (lease_expires, now_iso, task_id, worker_id),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            "SELECT 1 FROM tasks WHERE id = ? AND lease_owner = ? AND status = 'started'",
+            (task_id, worker_id),
+        ).fetchone()
+        return row is not None
+
+    def reclaim_expired_leases(self, now: datetime, limit: int = 1000) -> int:
+        """Move expired STARTED tasks back to RETRY."""
+        self._init_database()
+        now_iso = now.isoformat()
+        result = self.connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'retry',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_heartbeat_at = NULL,
+                next_attempt_at = ?
+            WHERE id IN (
+                SELECT id FROM tasks
+                WHERE status = 'started'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at < ?
+                LIMIT ?
+            )
+            """,
+            (now_iso, now_iso, limit),
+        )
+        self.connection.commit()
+        return max(0, result.rowcount)
+
+    def cleanup_old_tasks(
+        self, days: int = None, months: int = None, years: int = None
+    ):
         """Delete old completed tasks to manage database size.
 
         Removes tasks that completed before a calculated cutoff date. Only
@@ -445,7 +639,7 @@ class TaskStorage:
         """
         if not any([days, months, years]):
             return 0
-        
+
         self._init_database()
         cutoff_date = datetime.now()
         if days:
@@ -454,15 +648,18 @@ class TaskStorage:
             cutoff_date -= timedelta(days=months * 30)
         if years:
             cutoff_date -= timedelta(days=years * 365)
-        
-        result = self.connection.execute("""
+
+        result = self.connection.execute(
+            """
             DELETE FROM tasks 
             WHERE completed_at < ? 
             AND status IN ('success', 'failed', 'cancelled')
-        """, (cutoff_date.isoformat(),))
-        
+        """,
+            (cutoff_date.isoformat(),),
+        )
+
         return result.rowcount
-    
+
     def _row_to_task_info(self, row) -> TaskInfo:
         """Convert a database row tuple to a TaskInfo object.
 
@@ -483,6 +680,7 @@ class TaskStorage:
             - Enum fields (priority, status) are converted from stored values
             - Helper function _parse_datetime handles flexible datetime parsing
         """
+
         def _parse_datetime(dt_value):
             """Parse datetime value that might be string or datetime object.
 
@@ -497,17 +695,32 @@ class TaskStorage:
             if isinstance(dt_value, datetime):
                 return dt_value
             return datetime.fromisoformat(dt_value)
-        
+
         return TaskInfo(
-            id=row[0], name=row[1], category=row[2],
-            priority=TaskPriority(row[3]), status=TaskStatus(row[4]),
+            id=row[0],
+            name=row[1],
+            category=row[2],
+            priority=TaskPriority(row[3]),
+            status=TaskStatus(row[4]),
             created_at=_parse_datetime(row[5]),
             started_at=_parse_datetime(row[6]),
             completed_at=_parse_datetime(row[7]),
             elapsed_seconds=row[8] or 0.0,
             result=json.loads(row[9]) if row[9] else None,
-            error=row[10], retry_count=row[11], max_retries=row[12],
-            args=tuple(json.loads(row[13])) if row[13] else (),
-            kwargs=json.loads(row[14]) if row[14] else {},
-            progress=row[15] or 0.0, progress_message=row[16] or ""
+            error=row[10],
+            retry_count=row[11],
+            max_retries=row[12],
+            attempt=(row[13] or 0),
+            max_attempts=(row[14] or ((row[12] or 0) + 1)),
+            idempotency_key=row[15],
+            not_before=_parse_datetime(row[16]),
+            next_attempt_at=_parse_datetime(row[17]),
+            lease_owner=row[18],
+            lease_expires_at=_parse_datetime(row[19]),
+            claimed_at=_parse_datetime(row[20]),
+            last_heartbeat_at=_parse_datetime(row[21]),
+            args=tuple(json.loads(row[22])) if row[22] else (),
+            kwargs=json.loads(row[23]) if row[23] else {},
+            progress=row[24] or 0.0,
+            progress_message=row[25] or "",
         )

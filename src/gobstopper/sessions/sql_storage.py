@@ -1,4 +1,4 @@
-# src/wopr/sessions/sql_storage.py
+# src/gobstopper/sessions/sql_storage.py
 import datetime
 import json
 from typing import Any, Dict, Optional, TYPE_CHECKING

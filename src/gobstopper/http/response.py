@@ -219,7 +219,7 @@ class Response:
 
             Development-only insecure cookie:
 
-            >>> # Set ENV=development and WOPR_ALLOW_INSECURE_COOKIES=true
+            >>> # Set ENV=development and GOBSTOPPER_ALLOW_INSECURE_COOKIES=true
             >>> response.set_cookie("debug", "1", secure=False)
 
         Note:
@@ -228,7 +228,8 @@ class Response:
             - httponly=False is overridden to True with warning
             - samesite=None is overridden to "Lax" with warning
 
-            Set WOPR_ALLOW_INSECURE_COOKIES=true to disable enforcement.
+            Set GOBSTOPPER_ALLOW_INSECURE_COOKIES=true to disable enforcement
+            (legacy WOPR_ALLOW_INSECURE_COOKIES supported).
 
         See Also:
             :meth:`delete_cookie`: Remove a cookie
@@ -237,7 +238,11 @@ class Response:
         try:
             env = os.getenv("ENV", "development").lower()
             allow_insecure = (
-                os.getenv("WOPR_ALLOW_INSECURE_COOKIES", "false").lower() == "true"
+                os.getenv(
+                    "GOBSTOPPER_ALLOW_INSECURE_COOKIES",
+                    os.getenv("WOPR_ALLOW_INSECURE_COOKIES", "false"),
+                ).lower()
+                == "true"
             )
             if env == "production" and not allow_insecure:
                 if not secure:

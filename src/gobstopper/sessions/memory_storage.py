@@ -1,4 +1,4 @@
-# src/wopr/sessions/memory_storage.py
+# src/gobstopper/sessions/memory_storage.py
 import time
 from typing import Dict, Any, Optional, Tuple
 

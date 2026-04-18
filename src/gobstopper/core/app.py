@@ -14,6 +14,7 @@ import os
 import sys
 import traceback
 import threading
+from datetime import datetime
 from urllib.parse import unquote
 from pathlib import Path
 from types import SimpleNamespace
@@ -204,6 +205,13 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         # Initialize components
         self.template_engine = None
         self.task_queue = TaskQueue()
+        self.eda_dispatcher = None
+        self.eda_store = None
+        self.eda_config = None
+        self._eda_topics: list[str] = []
+        self._eda_consumer_group = "default"
+        self._eda_runner_task: asyncio.Task | None = None
+        self._eda_lifecycle_registered = False
 
         # Metrics configuration (typically from CLI/env)
         self.metrics_enabled = os.getenv("GOBSTOPPER_METRICS_ENABLED", "0") == "1"
@@ -250,6 +258,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         self._running_scheduled: list[asyncio.Task] = []
         self._supervised_tasks: set[asyncio.Task] = set()
         self.tasks = TaskSupervisor(self)
+        self.cache = None
 
         # Routing
         self.rust_router_available = RUST_ROUTER_AVAILABLE
@@ -839,6 +848,9 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         category: str = "default",
         priority: TaskPriority = TaskPriority.NORMAL,
         max_retries: int = 0,
+        run_at: datetime | None = None,
+        delay_seconds: float | None = None,
+        idempotency_key: str | None = None,
         *args,
         **kwargs,
     ) -> str:
@@ -925,11 +937,22 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :class:`gobstopper.tasks.queue.TaskQueue`: Task queue operations
         """
         return await self.task_queue.add_task(
-            name, category, priority, max_retries, *args, **kwargs
+            name,
+            category,
+            priority,
+            max_retries,
+            *args,
+            run_at=run_at,
+            delay_seconds=delay_seconds,
+            idempotency_key=idempotency_key,
+            **kwargs,
         )
 
     async def start_task_workers(
-        self, category: str = "default", worker_count: int = 1
+        self,
+        category: str = "default",
+        worker_count: int = 1,
+        skip_worker_check: bool = False,
     ):
         """Start background worker processes for task execution.
 
@@ -984,7 +1007,142 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             :meth:`add_background_task`: Queue tasks
             :meth:`on_startup`: Application startup hooks
         """
-        await self.task_queue.start_workers(category, worker_count)
+        await self.task_queue.start_workers(
+            category,
+            worker_count,
+            skip_worker_check=skip_worker_check,
+        )
+
+    def init_eda(
+        self,
+        *,
+        topics: list[str],
+        consumer_group: str = "default",
+        dispatcher=None,
+        store=None,
+        config=None,
+        autostart: bool = True,
+    ):
+        """Initialize EDA dispatcher/store and optionally bind lifecycle hooks."""
+        from ..eda import EDAConfig, EventDispatcher, InMemoryEventStore
+
+        self.eda_store = store or self.eda_store or InMemoryEventStore()
+        self.eda_config = config or self.eda_config or EDAConfig()
+        self.eda_dispatcher = (
+            dispatcher
+            or self.eda_dispatcher
+            or EventDispatcher(self.eda_store, config=self.eda_config)
+        )
+        self._eda_topics = list(topics)
+        self._eda_consumer_group = consumer_group
+
+        if autostart and not self._eda_lifecycle_registered:
+
+            @self.on_startup_primary
+            async def _start_eda_dispatcher_on_primary():
+                await self.start_eda_dispatcher()
+
+            @self.on_shutdown
+            async def _stop_eda_dispatcher_on_shutdown():
+                await self.stop_eda_dispatcher()
+
+            self._eda_lifecycle_registered = True
+
+        return self.eda_dispatcher
+
+    def init_eda_from_env(
+        self,
+        *,
+        topics: list[str],
+        consumer_group: str = "default",
+        autostart: bool = True,
+    ):
+        """Initialize EDA from environment defaults for zero-config bootstrapping."""
+        from ..eda import EDAConfig, EDAMode, SurrealEventStore
+
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return int(os.getenv(name, str(default)))
+            except Exception:
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            try:
+                return float(os.getenv(name, str(default)))
+            except Exception:
+                return default
+
+        mode_raw = os.getenv("EDA_MODE", "embedded").strip().lower()
+        try:
+            mode = EDAMode(mode_raw)
+        except Exception:
+            mode = EDAMode.EMBEDDED
+
+        surreal_url = os.getenv("GOBSTOPPER_SURREAL_URL", "surrealkv://.gobstopper/eda")
+        config = EDAConfig(
+            mode=mode,
+            store=os.getenv("EDA_STORE", "surreal"),
+            broker=os.getenv("EDA_BROKER", "none"),
+            surreal_url=surreal_url,
+            lease_seconds=_env_int("EDA_LEASE_SECONDS", 30),
+            poll_interval_seconds=_env_float("EDA_POLL_INTERVAL_SECONDS", 0.2),
+            idle_sleep_seconds=_env_float("EDA_IDLE_SLEEP_SECONDS", 0.1),
+        )
+
+        store = SurrealEventStore(
+            url=surreal_url,
+            namespace=os.getenv("GOBSTOPPER_SURREAL_NAMESPACE", "gobstopper"),
+            database=os.getenv("GOBSTOPPER_SURREAL_DATABASE", "eda"),
+            table=os.getenv("GOBSTOPPER_EDA_TABLE", "gob_events"),
+        )
+
+        return self.init_eda(
+            topics=topics,
+            consumer_group=consumer_group,
+            store=store,
+            config=config,
+            autostart=autostart,
+        )
+
+    def init_cache_from_env(self):
+        """Initialize cache facade from environment configuration."""
+        from ..cache import cache_from_env
+
+        self.cache = cache_from_env()
+        return self.cache
+
+    async def start_eda_dispatcher(self) -> None:
+        """Start EDA dispatcher run loop if configured and not already running."""
+        if self.eda_dispatcher is None or not self._eda_topics:
+            return
+
+        if self._eda_runner_task is not None and not self._eda_runner_task.done():
+            return
+
+        self._eda_runner_task = self.tasks.spawn(
+            self.eda_dispatcher.run_forever,
+            self._eda_topics,
+            self._eda_consumer_group,
+            name="gobstopper-eda-dispatcher",
+        )
+
+    async def stop_eda_dispatcher(self) -> None:
+        """Stop EDA dispatcher run loop and wait for shutdown."""
+        if self.eda_dispatcher is not None:
+            await self.eda_dispatcher.stop()
+
+        if self._eda_runner_task is not None:
+            self._eda_runner_task.cancel()
+            await asyncio.gather(self._eda_runner_task, return_exceptions=True)
+            self._eda_runner_task = None
+
+        if self.eda_store is not None and hasattr(self.eda_store, "close"):
+            try:
+                maybe_close = self.eda_store.close()
+                if asyncio.iscoroutine(maybe_close):
+                    await maybe_close
+            except Exception:
+                self.logger.exception("Error closing EDA store")
 
     async def _ensure_startup_complete(self):
         """Ensure startup tasks are completed.
@@ -1181,7 +1339,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             - Multiple handlers run in registration order
             - Exceptions in handlers are logged but don't stop other handlers
             - Task queue shutdown happens automatically after custom handlers
-            - Default shutdown timeout is 10 seconds (configurable via WOPR_SHUTDOWN_TIMEOUT)
+            - Default shutdown timeout is 10 seconds (configurable via GOBSTOPPER_SHUTDOWN_TIMEOUT; legacy WOPR_SHUTDOWN_TIMEOUT supported)
 
         See Also:
             :meth:`on_startup`: Initialization handlers
@@ -1341,7 +1499,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 "traceback": None,
             }
             body = await self._error_template_engine.render_template_async(
-                "wopr_error.html", **context
+                "gobstopper_error.html", **context
             )
             return Response(body, status=404, content_type="text/html")
         else:
@@ -1388,7 +1546,7 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 "traceback": tb_str,
             }
             body = await self._error_template_engine.render_template_async(
-                "wopr_error.html", **context
+                "gobstopper_error.html", **context
             )
             return Response(body, status=500, content_type="text/html")
         else:
@@ -1472,13 +1630,17 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
 
         # Apply request limits from env
         try:
-            max_bytes_env = os.getenv("WOPR_JSON_MAX_BYTES")
+            max_bytes_env = os.getenv(
+                "GOBSTOPPER_JSON_MAX_BYTES", os.getenv("WOPR_JSON_MAX_BYTES")
+            )
             if max_bytes_env:
                 setattr(request, "max_body_bytes", int(max_bytes_env))
         except Exception:
             pass
         try:
-            max_depth_env = os.getenv("WOPR_JSON_MAX_DEPTH")
+            max_depth_env = os.getenv(
+                "GOBSTOPPER_JSON_MAX_DEPTH", os.getenv("WOPR_JSON_MAX_DEPTH")
+            )
             if max_depth_env:
                 setattr(request, "max_json_depth", int(max_depth_env))
         except Exception:
@@ -2055,7 +2217,8 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
 
         Args:
             timeout: Maximum seconds to wait for in-flight requests (default: None).
-                If None, reads from environment variable WOPR_SHUTDOWN_TIMEOUT
+                If None, reads from environment variable GOBSTOPPER_SHUTDOWN_TIMEOUT
+                (falls back to legacy WOPR_SHUTDOWN_TIMEOUT)
                 (default: 10 seconds). After timeout, shutdown proceeds anyway.
 
         Examples:
@@ -2086,7 +2249,8 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             4. Shutdown task queue and workers
             5. Log any errors but continue shutdown
 
-            Environment variable WOPR_SHUTDOWN_TIMEOUT (seconds) sets default timeout.
+            Environment variable GOBSTOPPER_SHUTDOWN_TIMEOUT (seconds) sets default timeout
+            (legacy WOPR_SHUTDOWN_TIMEOUT is also supported).
             In-flight request count is tracked automatically.
             Shutdown hooks run even if timeout expires.
 
@@ -2103,7 +2267,12 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         to = timeout
         if to is None:
             try:
-                to = float(os.getenv("WOPR_SHUTDOWN_TIMEOUT", "10"))
+                to = float(
+                    os.getenv(
+                        "GOBSTOPPER_SHUTDOWN_TIMEOUT",
+                        os.getenv("WOPR_SHUTDOWN_TIMEOUT", "10"),
+                    )
+                )
             except Exception:
                 to = 10.0
         # Wait for in-flight requests

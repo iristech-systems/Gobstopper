@@ -1,48 +1,53 @@
 # Changelog
 
-## [0.5.0] - 2026-04-18
+## [0.5.0] - Unreleased
 
-### CLI + Runtime Ergonomics
+### Security + HTTP hardening
 
-- Added module entrypoint support via `python -m gobstopper ...` (`src/gobstopper/__main__.py`).
-- Improved CLI error guidance when Click is unavailable with explicit install and invocation hints.
-- Promoted `click` to core dependencies so `gobstopper` script installs reliably in standard environments.
+- Hardened request body-size enforcement paths to consistently apply configured limits.
+- Tightened forwarded-header trust handling with CIDR-aware trusted-proxy checks and safer X-Forwarded-For resolution.
+- Improved forwarded `proto` and `host` validation to reduce spoofing risk from untrusted hops.
+- Fixed session/cookie invalidation behavior and fallback cookie merge paths, including canonical `Set-Cookie` handling.
 
-### Request / Response Enhancements
+### Cache architecture (new)
 
-- Added content negotiation helpers on `Request`:
-  - `request.accepts(media_type)`
-  - `request.best_match(offers, default=None)`
-- Added `Request.bind(model, source="auto|json|form|multipart|query")` for typed request binding with validation and coercion.
-- Optimized `Response` header handling:
-  - case-insensitive header index cache
-  - RSGI header tuple cache
-  - safer invalidation when headers/cookies mutate
+- Added a formal cache contract in `gobstopper.cache`:
+  - `CacheEntry`, `CacheStore`
+  - `MemoryCacheStore` (L1)
+  - `SurrealCacheStore` (L2)
+  - `CacheFacade` with key versioning and feature flags
+- Added singleflight request coalescing for cache misses to avoid duplicate recomputation under load.
+- Added stale-while-revalidate flow with background refresh support and timeout fallback behavior in `get_or_set`.
+- Added EDA-driven invalidation hooks on `entity.updated`, `entity.deleted`, and `schema.bump` events.
+- Added L2 fail-open behavior and stale-overwrite/TOCTOU protections for safer concurrent cache writes.
+- Added `cache_from_env(...)` and `app.init_cache_from_env()` for environment-driven cache initialization.
+- Enforced remote Surreal credentials for cache L2 (`ws/wss/http/https` requires token or username/password).
+- Deployment note: Surreal embedded/local mode should be treated like DuckDB-style local storage for concurrency planning (single-worker recommended for writes); multi-worker deployments should use remote Surreal for shared writable L2.
 
-### Datastar + HTML Ergonomics
+### Datastar + HTML ergonomics
 
 - Added first-class Datastar response composition API:
   - `DatastarResponse`
   - `datastar_response(...)`
   - `Datastar.redirect(url)`
-- Improved SSE framing helpers in Datastar internals (`_event`, signal line-splitting).
+- Added `Request.datastar(...)` and `Request.datastar_dict(...)` for ergonomic Datastar payload responses.
+- Hardened Datastar SSE transport encoding:
+  - removed destructive whitespace collapsing
+  - preserved multiline content safely for SSE framing
+  - added CRLF validation for selector and script source fields
 - Added trusted raw fragment helpers to `gobstopper.html`:
   - `raw_html(...)`
   - `raw_js(...)`
   - `raw_css(...)`
+- Added guardrails in HTML Datastar helper attrs for unsupported forms:
+  - `on_keydown(..., key=...)` now raises `ValueError`
+  - `signals(..., merge=False)` now raises `ValueError`
 
-### Task Supervision
+### OpenAPI + routing improvements
 
-- Added in-process task supervision API:
-  - `app.tasks.spawn(...)`
-  - `app.spawn_task(...)`
-- Supervised tasks are tracked and cancelled during graceful shutdown.
-
-### OpenAPI Expansion
-
-- Added **blueprint-scoped OpenAPI** support:
+- Added blueprint-scoped OpenAPI support:
   - `attach_openapi_blueprint(app, blueprint, ...)`
-  - per-scope spec/docs endpoints (not app-global only)
+  - per-scope spec/docs endpoints
 - Extended `attach_openapi(...)` with path and scope controls:
   - `path`, `redoc_path`, `elements_path`
   - `include_mode="opt_in|auto"`
@@ -51,14 +56,55 @@
   - `validate_spec=True`
   - `strict_validation=True`
   - warning capture via `OpenAPIState.last_validation_warnings`
-- Improved schema adapters:
-  - better Union/Optional handling (incl. PEP 604 `|`)
-  - dataclass/msgspec default value emission into schemas
+- Added OpenAPI cache invalidation when new HTTP/WebSocket routes are registered.
+- Improved schema adapters for Optional/Union, including direct `NoneType -> {"type": "null"}` mapping.
+
+### EDA + migration + tasks
+
+- Added EDA module, dispatcher/store interfaces, in-memory store, Surreal store, and app lifecycle integration.
+- Added and validated EDA operational commands:
+  - `gobstopper eda dlq-list`
+  - `gobstopper eda dlq-requeue`
+  - `gobstopper eda replay`
+- Added `gobstopper migrate duckdb-to-surreal` for tasks-first migration testing:
+  - supports `--dry-run` and `--execute`
+  - optional `--verify` target presence check
+  - optional `--report` JSON artifact
+  - configurable target via `--to-surreal`, `--namespace`, `--database`, `--table`
+- Improved dead-letter replay/requeue diagnostics with explicit reason codes:
+  - `not_found`
+  - `topic_mismatch`
+  - `group_mismatch`
+  - `not_dead_lettered`
+
+### CLI + runtime ergonomics
+
+- Added module entrypoint support via `python -m gobstopper ...` (`src/gobstopper/__main__.py`).
+- Improved CLI guidance when Click is unavailable and promoted `click` to core dependencies.
+- Added in-process task supervision API:
+  - `app.tasks.spawn(...)`
+  - `app.spawn_task(...)`
+- Supervised tasks are tracked and cancelled during graceful shutdown.
+
+### Request / response APIs
+
+- Added content negotiation helpers on `Request`:
+  - `request.accepts(media_type)`
+  - `request.best_match(offers, default=None)`
+- Added `Request.bind(model, source="auto|json|form|multipart|query")` for typed request binding.
+- Optimized `Response` header handling with case-insensitive index and RSGI header tuple caching.
+
+### Naming + templates
+
+- Updated runtime env configuration to prefer `GOBSTOPPER_*` names with legacy `WOPR_*` fallback.
+- Updated remaining CLI/template naming references from `wopr[...]` and `wopr_tasks...` to Gobstopper naming.
+- Replaced the legacy production error template with a modern Gobstopper-branded non-debug page while preserving debug diagnostics.
 
 ### Notes
 
-- This release includes additive API surface and behavioral improvements across CLI, OpenAPI, Datastar, and HTTP primitives.
+- `0.5.0` is intentionally kept unreleased while these changes are integrated and verified as a single major pre-1.0 cut.
 - Existing decorator-based OpenAPI mode remains default (`include_mode="opt_in"`) for backward compatibility.
+- Granian/Gobstopper can still deliver high throughput on a single worker, but shared writable cache/event backends in multi-worker production should be networked services rather than embedded local stores.
 
 ## [0.4.2] - 2026-04-04
 

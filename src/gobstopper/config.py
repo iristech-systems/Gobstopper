@@ -305,103 +305,124 @@ class Config:
         """Load configuration from environment variables."""
         config: Dict[str, Any] = {}
 
+        def _env(gob_name: str, legacy_name: str) -> str | None:
+            return os.getenv(gob_name, os.getenv(legacy_name))
+
         # Top-level settings
-        if env_val := os.getenv("WOPR_ENV"):
+        if env_val := _env("GOBSTOPPER_ENV", "WOPR_ENV"):
             config["env"] = env_val
-        if debug := os.getenv("WOPR_DEBUG"):
+        if debug := _env("GOBSTOPPER_DEBUG", "WOPR_DEBUG"):
             config["debug"] = debug.lower() in ("true", "1", "yes")
 
         # Server settings
         server = {}
-        if host := os.getenv("WOPR_SERVER_HOST"):
+        if host := _env("GOBSTOPPER_SERVER_HOST", "WOPR_SERVER_HOST"):
             server["host"] = host
-        if port := os.getenv("WOPR_SERVER_PORT"):
+        if port := _env("GOBSTOPPER_SERVER_PORT", "WOPR_SERVER_PORT"):
             server["port"] = int(port)
-        if workers := os.getenv("WOPR_SERVER_WORKERS"):
+        if workers := _env("GOBSTOPPER_SERVER_WORKERS", "WOPR_SERVER_WORKERS"):
             server["workers"] = int(workers)
-        if log_level := os.getenv("WOPR_SERVER_LOG_LEVEL"):
+        if log_level := _env("GOBSTOPPER_SERVER_LOG_LEVEL", "WOPR_SERVER_LOG_LEVEL"):
             server["log_level"] = log_level
         if server:
             config["server"] = server
 
         # Security settings
         security = {}
-        if secret_key := os.getenv("WOPR_SECRET_KEY"):
+        if secret_key := _env("GOBSTOPPER_SECRET_KEY", "WOPR_SECRET_KEY"):
             security["secret_key"] = secret_key
-        if csrf := os.getenv("WOPR_ENABLE_CSRF"):
+        if csrf := _env("GOBSTOPPER_ENABLE_CSRF", "WOPR_ENABLE_CSRF"):
             security["enable_csrf"] = csrf.lower() in ("true", "1", "yes")
-        if session_type := os.getenv("WOPR_SESSION_STORAGE_TYPE"):
+        if session_type := _env(
+            "GOBSTOPPER_SESSION_STORAGE_TYPE", "WOPR_SESSION_STORAGE_TYPE"
+        ):
             security["session_storage_type"] = session_type
-        if session_path := os.getenv("WOPR_SESSION_STORAGE_PATH"):
+        if session_path := _env(
+            "GOBSTOPPER_SESSION_STORAGE_PATH", "WOPR_SESSION_STORAGE_PATH"
+        ):
             security["session_storage_path"] = session_path
         if security:
             config["security"] = security
 
         # CORS settings
         cors = {}
-        if cors_enabled := os.getenv("WOPR_CORS_ENABLED"):
+        if cors_enabled := _env("GOBSTOPPER_CORS_ENABLED", "WOPR_CORS_ENABLED"):
             cors["enabled"] = cors_enabled.lower() in ("true", "1", "yes")
-        if origins := os.getenv("WOPR_CORS_ALLOW_ORIGINS"):
+        if origins := _env(
+            "GOBSTOPPER_CORS_ALLOW_ORIGINS", "WOPR_CORS_ALLOW_ORIGINS"
+        ):
             cors["allow_origins"] = origins.split(",")
         if cors:
             config["cors"] = cors
 
         # Static files
         static = {}
-        if static_enabled := os.getenv("WOPR_STATIC_ENABLED"):
+        if static_enabled := _env("GOBSTOPPER_STATIC_ENABLED", "WOPR_STATIC_ENABLED"):
             static["enabled"] = static_enabled.lower() in ("true", "1", "yes")
-        if static_path := os.getenv("WOPR_STATIC_URL_PATH"):
+        if static_path := _env("GOBSTOPPER_STATIC_URL_PATH", "WOPR_STATIC_URL_PATH"):
             static["url_path"] = static_path
-        if static_dir := os.getenv("WOPR_STATIC_DIRECTORY"):
+        if static_dir := _env("GOBSTOPPER_STATIC_DIRECTORY", "WOPR_STATIC_DIRECTORY"):
             static["directory"] = static_dir
         if static:
             config["static_files"] = static
 
         # Templates
         templates = {}
-        if template_dir := os.getenv("WOPR_TEMPLATE_DIRECTORY"):
+        if template_dir := _env(
+            "GOBSTOPPER_TEMPLATE_DIRECTORY", "WOPR_TEMPLATE_DIRECTORY"
+        ):
             templates["directory"] = template_dir
-        if auto_reload := os.getenv("WOPR_TEMPLATE_AUTO_RELOAD"):
+        if auto_reload := _env(
+            "GOBSTOPPER_TEMPLATE_AUTO_RELOAD", "WOPR_TEMPLATE_AUTO_RELOAD"
+        ):
             templates["auto_reload"] = auto_reload.lower() in ("true", "1", "yes")
         if templates:
             config["templates"] = templates
 
         # Tasks
         tasks = {}
-        if tasks_enabled := os.getenv("WOPR_TASKS_ENABLED"):
+        if tasks_enabled := _env("GOBSTOPPER_TASKS_ENABLED", "WOPR_TASKS_ENABLED"):
             tasks["enabled"] = tasks_enabled.lower() in ("true", "1", "yes")
-        if max_workers := os.getenv("WOPR_TASKS_MAX_WORKERS"):
+        if max_workers := _env("GOBSTOPPER_TASKS_MAX_WORKERS", "WOPR_TASKS_MAX_WORKERS"):
             tasks["max_workers"] = int(max_workers)
-        if storage_path := os.getenv("WOPR_TASKS_STORAGE_PATH"):
+        if storage_path := _env(
+            "GOBSTOPPER_TASKS_STORAGE_PATH", "WOPR_TASKS_STORAGE_PATH"
+        ):
             tasks["storage_path"] = storage_path
         if tasks:
             config["tasks"] = tasks
 
         # Rate limiting
         rate_limit = {}
-        if rate_enabled := os.getenv("WOPR_RATE_LIMIT_ENABLED"):
+        if rate_enabled := _env(
+            "GOBSTOPPER_RATE_LIMIT_ENABLED", "WOPR_RATE_LIMIT_ENABLED"
+        ):
             rate_limit["enabled"] = rate_enabled.lower() in ("true", "1", "yes")
-        if default_rate := os.getenv("WOPR_RATE_LIMIT_DEFAULT_RATE"):
+        if default_rate := _env(
+            "GOBSTOPPER_RATE_LIMIT_DEFAULT_RATE", "WOPR_RATE_LIMIT_DEFAULT_RATE"
+        ):
             rate_limit["default_rate"] = int(default_rate)
         if rate_limit:
             config["rate_limit"] = rate_limit
 
         # Logging
         logging_config = {}
-        if log_level := os.getenv("WOPR_LOG_LEVEL"):
+        if log_level := _env("GOBSTOPPER_LOG_LEVEL", "WOPR_LOG_LEVEL"):
             logging_config["level"] = log_level
-        if log_format := os.getenv("WOPR_LOG_FORMAT"):
+        if log_format := _env("GOBSTOPPER_LOG_FORMAT", "WOPR_LOG_FORMAT"):
             logging_config["format"] = log_format
-        if log_file := os.getenv("WOPR_LOG_FILE"):
+        if log_file := _env("GOBSTOPPER_LOG_FILE", "WOPR_LOG_FILE"):
             logging_config["log_file"] = log_file
         if logging_config:
             config["logging"] = logging_config
 
         # Metrics
         metrics = {}
-        if metrics_enabled := os.getenv("WOPR_METRICS_ENABLED"):
+        if metrics_enabled := _env("GOBSTOPPER_METRICS_ENABLED", "WOPR_METRICS_ENABLED"):
             metrics["enabled"] = metrics_enabled.lower() in ("true", "1", "yes")
-        if metrics_endpoint := os.getenv("WOPR_METRICS_ENDPOINT"):
+        if metrics_endpoint := _env(
+            "GOBSTOPPER_METRICS_ENDPOINT", "WOPR_METRICS_ENDPOINT"
+        ):
             metrics["endpoint"] = metrics_endpoint
         if metrics:
             config["metrics"] = metrics

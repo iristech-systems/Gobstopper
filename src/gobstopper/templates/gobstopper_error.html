@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gobstopper Error {{ status_code }}</title>
+    <style>
+        :root {
+            --bg: #f4f6f8;
+            --surface: #ffffff;
+            --text: #14213d;
+            --muted: #5f6b7a;
+            --border: #d9e0e8;
+            --accent: #cc4b00;
+            --accent-soft: #fff1e8;
+            --debug-surface: #111827;
+            --debug-text: #e5e7eb;
+            --shadow: 0 20px 60px rgba(20, 33, 61, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 85% 15%, rgba(204, 75, 0, 0.12), transparent 35%),
+                radial-gradient(circle at 5% 95%, rgba(20, 33, 61, 0.1), transparent 30%),
+                var(--bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .card {
+            width: min(860px, 100%);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .header {
+            padding: 28px 28px 18px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(160deg, #ffffff, #f9fbfd);
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 14px 0 10px;
+            font-size: clamp(1.6rem, 2vw, 2.1rem);
+            line-height: 1.2;
+        }
+
+        .description {
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.55;
+            font-size: 1rem;
+        }
+
+        .content {
+            padding: 20px 28px 28px;
+            display: grid;
+            gap: 14px;
+        }
+
+        .assist {
+            margin: 0;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #f9fbfd;
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+        }
+
+        .meta-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            background: #fbfdff;
+        }
+
+        .meta-label {
+            margin: 0 0 4px;
+            font-size: 0.76rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 600;
+        }
+
+        .meta-value {
+            margin: 0;
+            font-size: 0.95rem;
+            overflow-wrap: anywhere;
+        }
+
+        details {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            background: #f8fbff;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        pre {
+            margin: 0;
+            padding: 14px;
+            overflow-x: auto;
+            font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+            font-size: 0.86rem;
+            line-height: 1.5;
+            background: var(--debug-surface);
+            color: var(--debug-text);
+        }
+
+        .footer {
+            padding: 14px 28px 22px;
+            color: var(--muted);
+            font-size: 0.88rem;
+            border-top: 1px solid var(--border);
+        }
+
+        @media (max-width: 640px) {
+            .header,
+            .content,
+            .footer {
+                padding-left: 18px;
+                padding-right: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="card" role="main" aria-labelledby="error-title">
+        <header class="header">
+            <span class="status">Error {{ status_code }}</span>
+            <h1 id="error-title">{{ error_title }}</h1>
+            <p class="description">{{ error_description }}</p>
+        </header>
+
+        <section class="content">
+            <div class="meta">
+                <article class="meta-item">
+                    <p class="meta-label">Reference ID</p>
+                    <p class="meta-value">{{ request_id }}</p>
+                </article>
+                {% if debug %}
+                <article class="meta-item">
+                    <p class="meta-label">Request</p>
+                    <p class="meta-value">{{ request_method }} {{ request_path }}</p>
+                </article>
+                {% endif %}
+            </div>
+
+            <p class="assist">If this keeps happening, share the reference ID with support so we can find the exact incident quickly.</p>
+
+            {% if debug and traceback %}
+            <details>
+                <summary>Diagnostics for developers (traceback)</summary>
+                <pre><code>{{ traceback }}</code></pre>
+            </details>
+            {% endif %}
+        </section>
+
+        <footer class="footer">
+            Gobstopper recorded this incident. Use the reference ID above to correlate logs.
+        </footer>
+    </main>
+</body>
+</html>

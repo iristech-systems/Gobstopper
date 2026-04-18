@@ -1,10 +1,12 @@
 import json
 import asyncio
 import functools
+import re
 from enum import Enum
 from typing import AsyncGenerator, Callable, Any, Dict, Iterable, TypeAlias
 from ..http.response import StreamResponse, Response
 from ..html._types import HasHtml, Renderable
+from ..html._fragments import raw_html
 
 FragmentLike: TypeAlias = str | HasHtml | Renderable
 
@@ -97,6 +99,23 @@ class Datastar:
         return out
 
     @staticmethod
+    def _validate_sse_value(label: str, value: str) -> str:
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"{label} cannot contain CR/LF characters")
+        return value
+
+    @staticmethod
+    def _elements_data_lines(fragment: str) -> list[str]:
+        # Preserve semantic whitespace/newlines by emitting one SSE data line per
+        # fragment line. Datastar receives a single concatenated payload.
+        lines = fragment.split("\n")
+        if not lines:
+            return ["elements "]
+        data_lines = [f"elements {lines[0]}"]
+        data_lines.extend(lines[1:])
+        return data_lines
+
+    @staticmethod
     def script_tag(pro_src: str = None) -> str:
         """Generate the Datastar ``<script>`` tag as an HTML string.
 
@@ -130,6 +149,7 @@ class Datastar:
             Serve the file via ``StaticFileMiddleware`` or your CDN.
         """
         src = pro_src if pro_src else Datastar._CDN_URL
+        Datastar._validate_sse_value("Datastar script src", src)
         return f'<script type="module" src="{src}"></script>'
 
     @staticmethod
@@ -150,13 +170,13 @@ class Datastar:
 
     @staticmethod
     def normalize_fragment(fragment: FragmentLike) -> str:
-        """Convert htpy/html objects to a single-line HTML fragment string."""
+        """Convert htpy/html objects to HTML fragment string without mutation."""
         if not isinstance(fragment, str):
             if hasattr(fragment, "__html__"):
                 fragment = fragment.__html__()
             else:
                 fragment = str(fragment)
-        return " ".join(fragment.split())
+        return fragment
 
     @staticmethod
     def merge_fragments(
@@ -197,8 +217,6 @@ class Datastar:
             data: elements <div id="foo">…</div>
             <blank line>
         """
-        import re
-
         # Support htpy elements and any __html__ object
         fragment = Datastar.normalize_fragment(fragment)
 
@@ -217,13 +235,15 @@ class Datastar:
             id_match = re.search(r'id=["\']([^"\']+)["\']', fragment)
             selector = f"#{id_match.group(1)}" if id_match else "body"
 
+        selector = Datastar._validate_sse_value("Datastar selector", selector)
+
         data_lines.append(f"selector {selector}")
         data_lines.append(f"mode {merge_mode.value}")
 
         if settling_time:
             data_lines.append(f"settle {settling_time}")
 
-        data_lines.append(f"elements {fragment}")
+        data_lines.extend(Datastar._elements_data_lines(fragment))
 
         return Datastar._event("datastar-patch-elements", data_lines)
 
@@ -370,8 +390,8 @@ def datastar_stream(
 
     Converts a simple function that returns HTML into a streaming SSE endpoint.
     The decorated function can be sync or async and should return an HTML
-    fragment string (or htpy element).  Multi-line fragments are normalised
-    automatically — no need for a _merge_single_line helper.
+    fragment string (or htpy element). Multi-line fragments are encoded into
+    SSE-safe data lines while preserving semantic whitespace.
 
     Args:
         selector: CSS selector for the target element.
@@ -441,3 +461,12 @@ def fragment(
         merge_mode=merge_mode,
         settling_time=settling_time,
     )
+
+
+def datastar_script(pro_src: str | None = None):
+    """Return a safe HTML fragment for the Datastar script tag.
+
+    This helper avoids common mistakes like nesting ``Datastar.script_tag()``
+    inside another ``script[...]`` node in the HTML DSL.
+    """
+    return raw_html(Datastar.script_tag(pro_src=pro_src))

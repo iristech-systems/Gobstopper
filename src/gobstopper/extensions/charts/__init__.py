@@ -22,7 +22,7 @@ Usage:
         return await app.render_template('dashboard.html', chart=chart.html)
 """
 
-from .extension import ChartExtension
+from .extension import ChartExtension, chart_runtime_script
 from .builders import (
     Chart, ChartBuilder, LineChart, BarChart, PieChart, ScatterChart,
     CandlestickChart, TimelineChart
@@ -41,6 +41,7 @@ __all__ = [
     'TimelineChart',
     'ChartTheme',
     'CDNProvider',
+    'chart_runtime_script',
 ]
 
 __version__ = '0.1.0'

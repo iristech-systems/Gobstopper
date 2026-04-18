@@ -445,13 +445,93 @@ class SecurityMiddleware:
         cookie_header = request.headers.get("cookie")
         if not cookie_header:
             return None
-        cookies = dict(item.strip().split("=", 1) for item in cookie_header.split(";"))
+        cookies = {}
+        for item in cookie_header.split(";"):
+            part = item.strip()
+            if not part or "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            cookies[key] = value
         raw = cookies.get(self.cookie_name)
         if not raw:
             return None
         if self.sign_session_id:
             return self._verify(raw)
         return raw
+
+    def _set_session_cookie(self, response: Response, session_id: str) -> None:
+        cookie_value = self._sign(session_id) if self.sign_session_id else session_id
+        if hasattr(response, "set_cookie"):
+            response.set_cookie(
+                self.cookie_name,
+                cookie_value,
+                path=self.cookie_path,
+                domain=self.cookie_domain,
+                max_age=self.cookie_max_age,
+                secure=self.cookie_secure,
+                httponly=self.cookie_httponly,
+                samesite=self.cookie_samesite,
+            )
+            return
+
+        cookie_parts = [f"{self.cookie_name}={cookie_value}"]
+        cookie_parts.append(f"Path={self.cookie_path}")
+        cookie_parts.append(f"Max-Age={self.cookie_max_age}")
+        if self.cookie_domain:
+            cookie_parts.append(f"Domain={self.cookie_domain}")
+        if self.cookie_secure:
+            cookie_parts.append("Secure")
+        if self.cookie_httponly:
+            cookie_parts.append("HttpOnly")
+        if self.cookie_samesite:
+            cookie_parts.append(f"SameSite={self.cookie_samesite}")
+        new_cookie = "; ".join(cookie_parts)
+        existing_key = next(
+            (k for k in response.headers.keys() if str(k).lower() == "set-cookie"),
+            None,
+        )
+        target_key = existing_key or "set-cookie"
+        existing = response.headers.get(target_key)
+        if not existing:
+            response.headers[target_key] = new_cookie
+        elif isinstance(existing, list):
+            response.headers[target_key] = [*existing, new_cookie]
+        else:
+            response.headers[target_key] = f"{existing}\n{new_cookie}"
+
+    def _delete_session_cookie(self, response: Response) -> None:
+        if hasattr(response, "delete_cookie"):
+            response.delete_cookie(
+                self.cookie_name,
+                path=self.cookie_path,
+                domain=self.cookie_domain,
+            )
+            return
+
+        cookie_parts = [f"{self.cookie_name}="]
+        cookie_parts.append(f"Path={self.cookie_path}")
+        cookie_parts.append("Max-Age=0")
+        if self.cookie_domain:
+            cookie_parts.append(f"Domain={self.cookie_domain}")
+        if self.cookie_secure:
+            cookie_parts.append("Secure")
+        if self.cookie_httponly:
+            cookie_parts.append("HttpOnly")
+        if self.cookie_samesite:
+            cookie_parts.append(f"SameSite={self.cookie_samesite}")
+        new_cookie = "; ".join(cookie_parts)
+        existing_key = next(
+            (k for k in response.headers.keys() if str(k).lower() == "set-cookie"),
+            None,
+        )
+        target_key = existing_key or "set-cookie"
+        existing = response.headers.get(target_key)
+        if not existing:
+            response.headers[target_key] = new_cookie
+        elif isinstance(existing, list):
+            response.headers[target_key] = [*existing, new_cookie]
+        else:
+            response.headers[target_key] = f"{existing}\n{new_cookie}"
 
     async def __call__(
         self, request: Request, call_next: Callable[[Request], Awaitable[Any]]
@@ -498,9 +578,23 @@ class SecurityMiddleware:
 
         response = await call_next(request)
 
-        # Save session if it was modified or if rolling sessions are enabled
+        # Save session if it was modified or if rolling sessions are enabled.
+        # If session was cleared for an existing SID, destroy and clear cookie.
         session_modified = request.session != original_session
-        should_save = (session_modified or self.rolling_sessions) and request.session
+        sid = getattr(request, "_session_id", None)
+        session_cleared = bool(sid) and session_modified and not request.session
+
+        if session_cleared:
+            await maybe_await(self.session_storage.delete(sid))
+            request._session_id = None
+            if response:
+                self._delete_session_cookie(response)
+
+        should_save = (
+            not session_cleared
+            and (session_modified or self.rolling_sessions)
+            and bool(request.session)
+        )
 
         if should_save:
             # Create new session ID if this is a new session
@@ -513,28 +607,7 @@ class SecurityMiddleware:
 
             # Set session cookie
             if response:
-                cookie_value = (
-                    self._sign(request._session_id)
-                    if self.sign_session_id
-                    else request._session_id
-                )
-
-                # Build cookie attributes
-                cookie_parts = [f"{self.cookie_name}={cookie_value}"]
-                cookie_parts.append(f"Path={self.cookie_path}")
-                cookie_parts.append(f"Max-Age={self.cookie_max_age}")
-
-                if self.cookie_domain:
-                    cookie_parts.append(f"Domain={self.cookie_domain}")
-                if self.cookie_secure:
-                    cookie_parts.append("Secure")
-                if self.cookie_httponly:
-                    cookie_parts.append("HttpOnly")
-                if self.cookie_samesite:
-                    cookie_parts.append(f"SameSite={self.cookie_samesite}")
-
-                cookie_header = "; ".join(cookie_parts)
-                response.headers["Set-Cookie"] = cookie_header
+                self._set_session_cookie(response, request._session_id)
 
         # Add security headers
         if response and self.enable_security_headers:

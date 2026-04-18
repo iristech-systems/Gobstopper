@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 # Enable background tasks (required for task system)
-os.environ["WOPR_TASKS_ENABLED"] = "1"
+os.environ["GOBSTOPPER_TASKS_ENABLED"] = "1"
 
 from gobstopper import (
     Gobstopper,

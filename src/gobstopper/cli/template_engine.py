@@ -95,7 +95,7 @@ class TemplateEngine:
                 display_name="Data Science API",
                 description="Machine learning models, data processing, and analytics APIs",
                 dependencies=[
-                    "wopr[all]",
+                    "gobstopper[all]",
                     "pandas>=2.0.0",
                     "numpy>=1.24.0",
                     "scikit-learn>=1.3.0",
@@ -176,7 +176,7 @@ class TemplateEngine:
                 display_name="Real-time Dashboard",
                 description="Live data monitoring with WebSocket streaming and interactive visualizations",
                 dependencies=[
-                    "wopr[all]",
+                    "gobstopper[all]",
                     "redis>=5.0.0",
                     "asyncpg>=0.29.0",
                     "plotly>=5.0.0",
@@ -244,7 +244,7 @@ class TemplateEngine:
                 display_name="Content Management System",
                 description="Blog, CMS, and content-heavy applications with admin interface",
                 dependencies=[
-                    "wopr[all]",
+                    "gobstopper[all]",
                     "asyncpg>=0.29.0",
                     "redis>=5.0.0",
                     "markdown>=3.0.0",
@@ -319,7 +319,7 @@ class TemplateEngine:
                 display_name="Microservice",
                 description="Single-responsibility service with health checks, monitoring, and container deployment",
                 dependencies=[
-                    "wopr[all]",
+                    "gobstopper[all]",
                     "asyncpg>=0.29.0",
                     "redis>=5.0.0",
                     "opentelemetry-api>=1.0.0",
@@ -723,8 +723,8 @@ build/
 Thumbs.db
 
 # Gobstopper specific
-wopr_tasks.duckdb
-wopr_tasks.duckdb.wal
+gobstopper_tasks.duckdb
+gobstopper_tasks.duckdb.wal
 """
         (project_path / ".gitignore").write_text(gitignore_content)
         

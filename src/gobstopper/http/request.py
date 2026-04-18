@@ -6,6 +6,9 @@ import msgspec
 from typing import Any, Optional
 from logging import Logger
 from urllib.parse import parse_qs
+import ipaddress
+import os
+import re
 
 try:
     from granian.rsgi import Scope, HTTPProtocol
@@ -112,6 +115,7 @@ class Request:
         "max_json_depth",
         "_security",
         "_accept",
+        "_trusted_proxy_networks",
     )
 
     @property
@@ -151,6 +155,7 @@ class Request:
         self._args = None
         self._cookies = None
         self._accept = None
+        self._trusted_proxy_networks = None
 
     @property
     def client_ip(self) -> str:
@@ -189,9 +194,12 @@ class Request:
             ...         return {"error": "Rate limit exceeded"}, 429
             ...     return {"status": "success"}
         """
-        # Standard 'X-Forwarded-For' header
-        if "x-forwarded-for" in self.headers:
-            return self.headers["x-forwarded-for"].split(",")[0].strip()
+        # Standard 'X-Forwarded-For' header (trusted proxies only)
+        if self._forwarded_headers_trusted() and "x-forwarded-for" in self.headers:
+            forwarded = self.headers["x-forwarded-for"]
+            resolved = self._resolve_forwarded_for(forwarded)
+            if resolved:
+                return resolved
 
         # Fallback to remote address from scope if available
         if hasattr(self.scope, "client") and self.scope.client:
@@ -702,10 +710,14 @@ class Request:
             Respects X-Forwarded-Proto header for proxy/load balancer scenarios.
             Defaults to scope.proto from RSGI.
         """
-        # Check for X-Forwarded-Proto header (proxy scenarios)
-        forwarded_proto = self.headers.get("x-forwarded-proto", "")
+        # Check for X-Forwarded-Proto header (trusted proxies only)
+        forwarded_proto = ""
+        if self._forwarded_headers_trusted():
+            forwarded_proto = self.headers.get("x-forwarded-proto", "")
         if forwarded_proto:
-            return forwarded_proto.split(",")[0].strip()
+            proto = forwarded_proto.split(",")[0].strip().lower()
+            if proto in {"http", "https"}:
+                return proto
         # Fallback to scope proto (RSGI uses 'proto' attribute, not dict 'scheme')
         return getattr(self.scope, "proto", "http")
 
@@ -738,12 +750,140 @@ class Request:
             Respects X-Forwarded-Host header for proxy scenarios.
             Includes port number if non-standard (e.g., ':8000').
         """
-        # Check for X-Forwarded-Host header
-        forwarded_host = self.headers.get("x-forwarded-host", "")
+        # Check for X-Forwarded-Host header (trusted proxies only)
+        forwarded_host = ""
+        if self._forwarded_headers_trusted():
+            forwarded_host = self.headers.get("x-forwarded-host", "")
         if forwarded_host:
-            return forwarded_host.split(",")[0].strip()
+            host = forwarded_host.split(",")[0].strip()
+            if self._is_valid_forwarded_host(host):
+                return host
         # Fallback to Host header
         return self.headers.get("host", "localhost")
+
+    def _peer_ip(self) -> str:
+        if hasattr(self.scope, "client") and self.scope.client:
+            return str(self.scope.client[0])
+        return ""
+
+    def _forwarded_headers_trusted(self) -> bool:
+        app = getattr(self, "app", None)
+        config = getattr(app, "config", None)
+
+        trust_raw = None
+        if isinstance(config, dict):
+            trust_raw = config.get("trust_forwarded_headers")
+        if trust_raw is None:
+            trust_raw = os.getenv("GOBSTOPPER_TRUST_FORWARDED_HEADERS", "false")
+        trust_forwarded = str(trust_raw).strip().lower() in {"1", "true", "yes", "on"}
+        if not trust_forwarded:
+            return False
+
+        trusted_raw = None
+        if isinstance(config, dict):
+            trusted_raw = config.get("trusted_proxies")
+        if trusted_raw is None:
+            trusted_raw = os.getenv("GOBSTOPPER_TRUSTED_PROXIES", "")
+
+        trusted_values = self._trusted_proxy_values(trusted_raw)
+
+        if not trusted_values:
+            return False
+        if "*" in trusted_values:
+            return True
+
+        peer_ip = self._peer_ip()
+        if not peer_ip:
+            return False
+
+        try:
+            peer_addr = ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return False
+
+        for network in self._trusted_proxy_networks_from_values(trusted_values):
+            if peer_addr in network:
+                return True
+        return False
+
+    def _trusted_proxy_values(self, trusted_raw: Any) -> list[str]:
+        if isinstance(trusted_raw, str):
+            return [item.strip() for item in trusted_raw.split(",") if item.strip()]
+        if isinstance(trusted_raw, (list, tuple, set)):
+            return [str(item).strip() for item in trusted_raw if str(item).strip()]
+        return []
+
+    def _trusted_proxy_networks_from_values(self, trusted_values: list[str]):
+        if self._trusted_proxy_networks is not None:
+            return self._trusted_proxy_networks
+
+        networks = []
+        for value in trusted_values:
+            if value == "*":
+                continue
+            try:
+                networks.append(ipaddress.ip_network(value, strict=False))
+            except ValueError:
+                continue
+        self._trusted_proxy_networks = networks
+        return networks
+
+    def _resolve_forwarded_for(self, header_value: str) -> str | None:
+        parts = [p.strip() for p in header_value.split(",") if p.strip()]
+        if not parts:
+            return None
+
+        trusted_values = self._trusted_proxy_values(
+            getattr(getattr(self, "app", None), "config", {}).get("trusted_proxies", None)
+            if isinstance(getattr(getattr(self, "app", None), "config", None), dict)
+            else None
+        )
+        if not trusted_values:
+            env_values = os.getenv("GOBSTOPPER_TRUSTED_PROXIES", "")
+            trusted_values = [item.strip() for item in env_values.split(",") if item.strip()]
+        wildcard = "*" in trusted_values
+        networks = self._trusted_proxy_networks_from_values(trusted_values)
+
+        if wildcard:
+            for ip_text in parts:
+                try:
+                    ipaddress.ip_address(ip_text)
+                    return ip_text
+                except ValueError:
+                    continue
+            return self._peer_ip() or None
+
+        def _trusted(ip_text: str) -> bool:
+            if wildcard:
+                return True
+            try:
+                addr = ipaddress.ip_address(ip_text)
+            except ValueError:
+                return False
+            return any(addr in network for network in networks)
+
+        # Walk right-to-left, stop at first untrusted hop.
+        for ip_text in reversed(parts):
+            try:
+                ipaddress.ip_address(ip_text)
+            except ValueError:
+                continue
+            if not _trusted(ip_text):
+                return ip_text
+
+        # If all valid values are trusted, prefer the direct peer IP.
+        peer = self._peer_ip()
+        if peer:
+            return peer
+        return None
+
+    @staticmethod
+    def _is_valid_forwarded_host(host: str) -> bool:
+        if not host:
+            return False
+        if any(ch in host for ch in "\r\n\t "):
+            return False
+        return bool(re.match(r"^[A-Za-z0-9.:-]+$", host))
 
     @property
     def host_url(self) -> str:
@@ -893,17 +1033,31 @@ class Request:
             # If we want to support both streaming and buffering, we should be careful.
             # If stream() was already used, we might not be able to get the full body unless we cached it.
             # For now, we assume protocol() gets the full body.
-            body = await self.protocol()
-            # Enforce max body size if configured on the instance
-            try:
-                max_bytes = getattr(self, "max_body_bytes", None)
-                if max_bytes is not None and body and len(body) > int(max_bytes):
-                    from .errors import RequestTooLarge
+            max_limit: int | None = None
+            max_bytes = getattr(self, "max_body_bytes", None)
+            if max_bytes is not None:
+                try:
+                    max_limit = int(max_bytes)
+                except (TypeError, ValueError):
+                    max_limit = None
 
-                    raise RequestTooLarge("Request body too large")
-            except Exception:
-                # If attribute missing or conversion fails, ignore and proceed
-                pass
+            if max_limit is not None:
+                content_length = self.headers.get("content-length", "")
+                if content_length:
+                    try:
+                        if int(content_length) > max_limit:
+                            from .errors import RequestTooLarge
+
+                            raise RequestTooLarge("Request body too large")
+                    except ValueError:
+                        pass
+
+            body = await self.protocol()
+
+            if max_limit is not None and body and len(body) > max_limit:
+                from .errors import RequestTooLarge
+
+                raise RequestTooLarge("Request body too large")
             self._body = body
         return self._body
 
@@ -930,8 +1084,23 @@ class Request:
             yield self._body
             return
 
+        max_limit: int | None = None
+        max_bytes = getattr(self, "max_body_bytes", None)
+        if max_bytes is not None:
+            try:
+                max_limit = int(max_bytes)
+            except (TypeError, ValueError):
+                max_limit = None
+
+        seen = 0
         # RSGI protocol object is iterable for streaming
         async for chunk in self.protocol:
+            if max_limit is not None:
+                seen += len(chunk)
+                if seen > max_limit:
+                    from .errors import RequestTooLarge
+
+                    raise RequestTooLarge("Request body too large")
             yield chunk
 
     # Backwards-compat alias expected by app handler
@@ -1710,3 +1879,40 @@ class Request:
             k: (v[-1] if isinstance(v, list) and v else v) for k, v in self.args.items()
         }
         return _coerce(simple)
+
+    def datastar(self, model: type[msgspec.Struct] | None = None, *, key: str = "datastar", default: Any = None) -> Any:
+        """Parse Datastar signal payload from query args and optionally bind model.
+
+        Datastar actions commonly send a compact JSON payload in a query arg
+        (default key: ``datastar``). This helper decodes that payload and can
+        coerce it into a typed ``msgspec.Struct`` model.
+        """
+        from .errors import BodyValidationError
+
+        raw_values = self.args.get(key)
+        if not raw_values:
+            return default
+
+        raw = raw_values[-1] if isinstance(raw_values, list) else raw_values
+        if raw in (None, ""):
+            return default
+
+        try:
+            payload = msgspec.json.decode(raw)
+        except msgspec.DecodeError as e:
+            raise BodyValidationError(str(e))
+
+        if model is None:
+            return payload
+
+        try:
+            return msgspec.convert(payload, type=model, strict=False)  # type: ignore[arg-type]
+        except Exception as e:
+            raise BodyValidationError(str(e))
+
+    def datastar_dict(self, *, key: str = "datastar", default: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return Datastar payload as a dict, falling back to ``default``."""
+        parsed = self.datastar(key=key, default=default or {})
+        if isinstance(parsed, dict):
+            return parsed
+        return default or {}

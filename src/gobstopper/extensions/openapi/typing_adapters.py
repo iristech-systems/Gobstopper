@@ -314,7 +314,9 @@ class FallbackAdapter:
             if has_null and len(non_null) == 1:
                 inner_schema = registry.resolve_schema(non_null[0])
                 return {"anyOf": [inner_schema, {"type": "null"}]}
-            subs = [registry.resolve_schema(a) for a in args]
+            subs = [registry.resolve_schema(a) for a in non_null]
+            if has_null:
+                subs.append({"type": "null"})
             return {"oneOf": subs}
 
         # Literal
@@ -367,6 +369,8 @@ class FallbackAdapter:
             pass
 
         # Unknown types -> object
+        if tp is type(None):
+            return {"type": "null"}
         if isinstance(tp, type):
             schema = {"type": "object"}
             return registry.ref_or_inline(tp, schema)

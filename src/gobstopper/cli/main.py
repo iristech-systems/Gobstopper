@@ -4,11 +4,13 @@ Main CLI interface for Gobstopper framework
 
 import os
 import sys
+import asyncio
 import shutil
 import platform
 import subprocess
 import json
 import time
+from datetime import datetime, timezone
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -97,6 +99,55 @@ def load_config_file(config_name: str) -> Dict[str, Any]:
         )
 
     return config_data
+
+
+def _build_surreal_event_store_from_env():
+    from ..eda import SurrealEventStore
+
+    return SurrealEventStore(
+        url=os.getenv("GOBSTOPPER_SURREAL_URL", "surrealkv://.gobstopper/eda"),
+        namespace=os.getenv("GOBSTOPPER_SURREAL_NAMESPACE", "gobstopper"),
+        database=os.getenv("GOBSTOPPER_SURREAL_DATABASE", "eda"),
+        table=os.getenv("GOBSTOPPER_EDA_TABLE", "gob_events"),
+    )
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+    return None
+
+
+async def _requeue_with_reason(
+    store,
+    event_id: str,
+    consumer_group: str,
+    topic: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Attempt dead-letter requeue and return a stable reason code."""
+    event = await store.get(event_id)
+    if event is None:
+        return False, "not_found"
+    if topic is not None and event.topic != topic:
+        return False, "topic_mismatch"
+    if event.dead_lettered_at is None:
+        return False, "not_dead_lettered"
+
+    ok = await store.requeue_dead_letter(
+        event_id,
+        consumer_group,
+        expected_topic=topic,
+    )
+    if ok:
+        return True, "ok"
+    return False, "group_mismatch"
 
 
 if not CLICK_AVAILABLE:
@@ -381,6 +432,411 @@ else:
         deleted = storage.cleanup_old_tasks(days=days, months=months)
 
         click.echo(f"✅ Cleaned up {deleted} old tasks")
+
+    @cli.group()
+    def eda():
+        """Manage EDA operational workflows (DLQ/replay)."""
+
+    @cli.group()
+    def migrate():
+        """Run storage/data migrations."""
+
+    @migrate.command("duckdb-to-surreal")
+    @click.option(
+        "--from-duckdb",
+        "duckdb_path",
+        required=True,
+        type=click.Path(exists=True),
+        help="Path to source DuckDB database",
+    )
+    @click.option(
+        "--to-surreal",
+        "surreal_url",
+        default="surrealkv://.gobstopper/eda",
+        show_default=True,
+        help="Target Surreal URL",
+    )
+    @click.option("--namespace", default="gobstopper", show_default=True)
+    @click.option("--database", default="eda", show_default=True)
+    @click.option("--table", default="gob_events", show_default=True)
+    @click.option("--batch-size", default=500, type=int, show_default=True)
+    @click.option("--limit", default=None, type=int, help="Optional row limit")
+    @click.option("--dry-run", is_flag=True, help="Plan migration without writing")
+    @click.option("--execute", is_flag=True, help="Execute migration writes")
+    @click.option("--verify", is_flag=True, help="Verify migrated rows exist in target")
+    @click.option("--report", default=None, help="Write JSON report to path")
+    def migrate_duckdb_to_surreal(
+        duckdb_path: str,
+        surreal_url: str,
+        namespace: str,
+        database: str,
+        table: str,
+        batch_size: int,
+        limit: Optional[int],
+        dry_run: bool,
+        execute: bool,
+        verify: bool,
+        report: Optional[str],
+    ):
+        """Migrate DuckDB tasks table rows into Surreal event records."""
+
+        if not dry_run and not execute:
+            dry_run = True
+
+        if dry_run and execute:
+            raise click.ClickException("Choose either --dry-run or --execute, not both")
+
+        try:
+            import duckdb
+        except Exception as exc:
+            raise click.ClickException(
+                "DuckDB is required for migration. Install dependency 'duckdb'."
+            ) from exc
+
+        from ..eda import EventEnvelope, SurrealEventStore
+
+        async def _run():
+            started = datetime.now(timezone.utc).isoformat()
+            source_count = 0
+            migrated = 0
+            skipped = 0
+            verified = 0
+            failures: list[dict[str, str]] = []
+
+            conn = duckdb.connect(duckdb_path, read_only=True)
+            try:
+                select_query = (
+                    "SELECT id, name, category, priority, status, created_at, started_at, completed_at, "
+                    "elapsed_seconds, result, error, retry_count, max_retries, attempt, max_attempts, "
+                    "idempotency_key, not_before, next_attempt_at, lease_owner, lease_expires_at, "
+                    "claimed_at, last_heartbeat_at, args, kwargs, progress, progress_message "
+                    "FROM tasks ORDER BY created_at ASC"
+                )
+                if limit is not None and limit > 0:
+                    select_query += f" LIMIT {int(limit)}"
+
+                rows = conn.execute(select_query).fetchall()
+                source_count = len(rows)
+            finally:
+                conn.close()
+
+            click.echo(
+                f"Migration duckdb->surreal mode={'DRY_RUN' if dry_run else 'EXECUTE'} rows={source_count}"
+            )
+
+            store = SurrealEventStore(
+                url=surreal_url,
+                namespace=namespace,
+                database=database,
+                table=table,
+            )
+            await store.connect()
+            try:
+                for idx in range(0, len(rows), max(1, batch_size)):
+                    batch = rows[idx : idx + max(1, batch_size)]
+                    for row in batch:
+                        (
+                            task_id,
+                            name,
+                            category,
+                            priority,
+                            status,
+                            created_at,
+                            started_at,
+                            completed_at,
+                            elapsed_seconds,
+                            result,
+                            error,
+                            retry_count,
+                            max_retries,
+                            attempt,
+                            max_attempts,
+                            idempotency_key,
+                            not_before,
+                            next_attempt_at,
+                            lease_owner,
+                            lease_expires_at,
+                            claimed_at,
+                            last_heartbeat_at,
+                            args,
+                            kwargs,
+                            progress,
+                            progress_message,
+                        ) = row
+
+                        event_id = f"task-{task_id}"
+                        topic = f"tasks.{category}.{name}"
+
+                        payload = {
+                            "task_id": task_id,
+                            "name": name,
+                            "category": category,
+                            "priority": priority,
+                            "status": status,
+                            "created_at": str(created_at) if created_at is not None else None,
+                            "started_at": str(started_at) if started_at is not None else None,
+                            "completed_at": str(completed_at)
+                            if completed_at is not None
+                            else None,
+                            "elapsed_seconds": elapsed_seconds,
+                            "result": result,
+                            "error": error,
+                            "retry_count": retry_count,
+                            "max_retries": max_retries,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "idempotency_key": idempotency_key,
+                            "not_before": str(not_before) if not_before is not None else None,
+                            "next_attempt_at": str(next_attempt_at)
+                            if next_attempt_at is not None
+                            else None,
+                            "lease_owner": lease_owner,
+                            "lease_expires_at": str(lease_expires_at)
+                            if lease_expires_at is not None
+                            else None,
+                            "claimed_at": str(claimed_at) if claimed_at is not None else None,
+                            "last_heartbeat_at": str(last_heartbeat_at)
+                            if last_heartbeat_at is not None
+                            else None,
+                            "args": args,
+                            "kwargs": kwargs,
+                            "progress": progress,
+                            "progress_message": progress_message,
+                        }
+
+                        envelope = EventEnvelope(
+                            id=event_id,
+                            topic=topic,
+                            payload=payload,
+                            created_at=_parse_dt(str(created_at))
+                            or datetime.now(timezone.utc),
+                            headers={"source": "duckdb", "migration": "duckdb-to-surreal"},
+                            key=str(task_id),
+                            idempotency_key=idempotency_key,
+                            producer="gobstopper-migrate",
+                            not_before=_parse_dt(str(not_before)) if not_before else None,
+                            next_attempt_at=(
+                                _parse_dt(str(next_attempt_at)) if next_attempt_at else None
+                            ),
+                            delivery_attempt=max(0, int(attempt or 0)),
+                            max_deliveries=max(1, int(max_attempts or 1)),
+                            lease_owner=lease_owner,
+                            lease_expires_at=(
+                                _parse_dt(str(lease_expires_at))
+                                if lease_expires_at
+                                else None
+                            ),
+                            claimed_at=_parse_dt(str(claimed_at)) if claimed_at else None,
+                            last_error=error,
+                            acked_at=(
+                                _parse_dt(str(completed_at))
+                                if status == "success" and completed_at is not None
+                                else None
+                            ),
+                            dead_lettered_at=(
+                                _parse_dt(str(completed_at))
+                                if status == "failed" and completed_at is not None
+                                else None
+                            ),
+                        )
+
+                        if dry_run:
+                            migrated += 1
+                            continue
+
+                        try:
+                            await store.append(envelope)
+                            migrated += 1
+                        except Exception as exc:
+                            failures.append(
+                                {
+                                    "task_id": str(task_id),
+                                    "event_id": event_id,
+                                    "error": str(exc),
+                                }
+                            )
+                            skipped += 1
+
+                if verify and not dry_run:
+                    for row in rows:
+                        task_id = row[0]
+                        got = await store.get(f"task-{task_id}")
+                        if got is not None:
+                            verified += 1
+            finally:
+                await store.close()
+
+            finished = datetime.now(timezone.utc).isoformat()
+            report_obj = {
+                "version": 1,
+                "started_at": started,
+                "finished_at": finished,
+                "mode": "dry-run" if dry_run else "execute",
+                "source": {"duckdb_path": duckdb_path},
+                "target": {
+                    "surreal_url": surreal_url,
+                    "namespace": namespace,
+                    "database": database,
+                    "table": table,
+                },
+                "counts": {
+                    "source": source_count,
+                    "migrated": migrated,
+                    "skipped": skipped,
+                    "failed": len(failures),
+                    "verified": verified,
+                },
+                "failures": failures[:50],
+            }
+
+            if report:
+                Path(report).write_text(json.dumps(report_obj, indent=2))
+
+            click.echo(
+                f"Done: source={source_count} migrated={migrated} failed={len(failures)}"
+            )
+            if verify and not dry_run:
+                click.echo(f"Verify: {verified}/{source_count} records present")
+            if failures:
+                raise click.ClickException(
+                    f"Migration completed with {len(failures)} failed rows"
+                )
+
+        asyncio.run(_run())
+
+    @eda.command("dlq-list")
+    @click.option("--topic", required=True, help="Topic name")
+    @click.option("--group", "consumer_group", default="default", help="Consumer group")
+    @click.option("--limit", default=20, type=int, help="Max dead-letter rows")
+    @click.option("--offset", default=0, type=int, help="Pagination offset")
+    def eda_dlq_list(topic: str, consumer_group: str, limit: int, offset: int):
+        """List dead-letter events for a topic."""
+
+        async def _run():
+            store = _build_surreal_event_store_from_env()
+            await store.connect()
+            try:
+                events = await store.list_dead_letters(
+                    topic,
+                    consumer_group,
+                    limit=max(1, limit),
+                    offset=max(0, offset),
+                )
+                if not events:
+                    click.echo("No dead-letter events found.")
+                    return
+
+                for event in events:
+                    click.echo(
+                        f"{event.id} topic={event.topic} attempts={event.delivery_attempt}/{event.max_deliveries} "
+                        f"dead_lettered_at={event.dead_lettered_at} error={event.last_error or '-'}"
+                    )
+            finally:
+                await store.close()
+
+        asyncio.run(_run())
+
+    @eda.command("dlq-requeue")
+    @click.option("--topic", required=True, help="Topic name")
+    @click.option("--group", "consumer_group", default="default", help="Consumer group")
+    @click.option("--event-id", required=True, help="Dead-letter event id")
+    def eda_dlq_requeue(topic: str, consumer_group: str, event_id: str):
+        """Requeue a dead-letter event for replay."""
+
+        async def _run():
+            store = _build_surreal_event_store_from_env()
+            await store.connect()
+            try:
+                ok, reason = await _requeue_with_reason(
+                    store,
+                    event_id,
+                    consumer_group,
+                    topic,
+                )
+                if ok:
+                    click.echo(f"✅ Requeued dead-letter event {event_id}")
+                else:
+                    raise click.ClickException(
+                        f"Could not requeue event {event_id} [{reason}]"
+                    )
+            finally:
+                await store.close()
+
+        asyncio.run(_run())
+
+    @eda.command("replay")
+    @click.option("--topic", required=True, help="Topic name")
+    @click.option("--group", "consumer_group", default="default", help="Consumer group")
+    @click.option("--event-id", default=None, help="Replay a single dead-letter event")
+    @click.option("--limit", default=50, type=int, help="Max dead-letter rows to replay")
+    @click.option("--all", "replay_all", is_flag=True, help="Replay all dead-letter rows")
+    @click.option("--dry-run", is_flag=True, help="Show what would be replayed")
+    def eda_replay(
+        topic: str,
+        consumer_group: str,
+        event_id: Optional[str],
+        limit: int,
+        replay_all: bool,
+        dry_run: bool,
+    ):
+        """Replay dead-letter events back into active processing."""
+
+        async def _run():
+            store = _build_surreal_event_store_from_env()
+            await store.connect()
+            try:
+                if event_id:
+                    event_ids = [event_id]
+                else:
+                    fetch_limit = 100000 if replay_all else max(1, limit)
+                    events = await store.list_dead_letters(
+                        topic,
+                        consumer_group,
+                        limit=fetch_limit,
+                        offset=0,
+                    )
+                    event_ids = [event.id for event in events]
+
+                if not event_ids:
+                    click.echo("No dead-letter events to replay.")
+                    return
+
+                if dry_run:
+                    click.echo(f"Would replay {len(event_ids)} event(s):")
+                    for eid in event_ids:
+                        click.echo(f"- {eid}")
+                    return
+
+                replayed = 0
+                failed_reasons: dict[str, int] = {}
+                for eid in event_ids:
+                    ok, reason = await _requeue_with_reason(
+                        store,
+                        eid,
+                        consumer_group,
+                        topic,
+                    )
+                    if ok:
+                        replayed += 1
+                    else:
+                        failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
+
+                if event_id and replayed == 0:
+                    reason = next(iter(failed_reasons.keys()), "unknown")
+                    raise click.ClickException(
+                        f"Could not replay event {event_id} [{reason}]"
+                    )
+
+                click.echo(f"✅ Replayed {replayed}/{len(event_ids)} event(s)")
+                if failed_reasons:
+                    reason_summary = ", ".join(
+                        f"{name}={count}" for name, count in sorted(failed_reasons.items())
+                    )
+                    click.echo(f"⚠️  Replay skips by reason: {reason_summary}")
+            finally:
+                await store.close()
+
+        asyncio.run(_run())
 
     @cli.command()
     @click.argument("app", required=False, default="app:app")
@@ -809,7 +1265,15 @@ else:
             click.echo("\n\n👋 Shutting down gracefully...")
             if proc and proc.poll() is None:
                 proc.terminate()
-                shutdown_timeout = int(os.getenv("WOPR_SHUTDOWN_TIMEOUT", "10")) + 3
+                shutdown_timeout = (
+                    int(
+                        os.getenv(
+                            "GOBSTOPPER_SHUTDOWN_TIMEOUT",
+                            os.getenv("WOPR_SHUTDOWN_TIMEOUT", "10"),
+                        )
+                    )
+                    + 3
+                )
                 try:
                     proc.wait(timeout=shutdown_timeout)
                 except subprocess.TimeoutExpired:

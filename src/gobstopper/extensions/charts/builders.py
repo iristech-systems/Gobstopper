@@ -282,7 +282,7 @@ class ChartBuilder(ABC):
         if not PYECHARTS_AVAILABLE:
             raise ImportError(
                 'pyecharts is required for charts extension. '
-                'Install with: pip install wopr[charts]'
+                'Install with: pip install gobstopper[charts]'
             )
 
         self._width = width

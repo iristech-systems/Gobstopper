@@ -82,12 +82,12 @@ def on_submit(action: str, prevent: bool = True, **modifiers) -> DatastarAttrs:
 
 def on_keydown(action: str, key: Optional[str] = None, **modifiers) -> DatastarAttrs:
     """Keydown event handler, optionally for a specific key"""
-    event = "keydown"
     if key:
-        # Note: Datastar doesn't natively support key filtering in event name like Vue
-        # But we can support window-level keys if needed
-        pass
-    return on(event, action, **modifiers)
+        raise ValueError(
+            "on_keydown(..., key=...) is not supported by Datastar data-on modifiers; "
+            "filter keys in your expression/action instead"
+        )
+    return on("keydown", action, **modifiers)
 
 
 def on_load(action: str, **modifiers) -> DatastarAttrs:
@@ -148,12 +148,12 @@ def signals(obj: Dict[str, JSONValue], merge: bool = True) -> DatastarAttrs:
         obj: Dictionary of initial signal values
         merge: Whether to merge with existing signals (default True)
     """
-    key = "data-signals"
     if not merge:
-        # Datastar defaults to merging, check docs if there's an overwrite flag
-        # For now we assume standard data-signals
-        pass
-    return {key: json.dumps(obj)}
+        raise ValueError(
+            "signals(..., merge=False) is not supported by Datastar. "
+            "Use server-side patch-signals semantics for conditional updates."
+        )
+    return {"data-signals": json.dumps(obj)}
 
 
 def computed(name: str, expression: str) -> DatastarAttrs:

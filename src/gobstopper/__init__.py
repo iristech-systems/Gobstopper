@@ -66,6 +66,20 @@ from .tasks.queue import (
     should_run_background_workers,
 )
 from .tasks.storage import TaskStorage
+from .eda import (
+    EDAConfig,
+    EDAMode,
+    EventEnvelope,
+    EventStore,
+    EventHandler,
+    BrokerBridge,
+    Dispatcher,
+    EventDispatcher,
+    InMemoryEventStore,
+    SurrealEventStore,
+    InProcessBridge,
+    new_event,
+)
 from .templates.engine import TemplateEngine
 from .middleware import (
     StaticFileMiddleware,
@@ -76,6 +90,14 @@ from .middleware import (
 )
 from .sessions.storage import BaseSessionStorage, AsyncBaseSessionStorage
 from .sessions.memory_storage import MemorySessionStorage
+from .cache import (
+    CacheEntry,
+    CacheStore,
+    MemoryCacheStore,
+    SurrealCacheStore,
+    CacheFacade,
+    cache_from_env,
+)
 
 # Optional session storage backends (require additional dependencies)
 try:
@@ -129,6 +151,19 @@ __all__ = [
     "TaskQueue",
     "TaskStorage",
     "should_run_background_workers",
+    # EDA
+    "EDAConfig",
+    "EDAMode",
+    "EventEnvelope",
+    "EventStore",
+    "EventHandler",
+    "BrokerBridge",
+    "Dispatcher",
+    "EventDispatcher",
+    "InMemoryEventStore",
+    "SurrealEventStore",
+    "InProcessBridge",
+    "new_event",
     # Templates
     "TemplateEngine",
     # Middleware
@@ -143,6 +178,13 @@ __all__ = [
     "MemorySessionStorage",
     "AsyncRedisSessionStorage",  # Requires redis.asyncio
     "PostgresSessionStorage",  # Requires asyncpg
+    # Cache
+    "CacheEntry",
+    "CacheStore",
+    "MemoryCacheStore",
+    "SurrealCacheStore",
+    "CacheFacade",
+    "cache_from_env",
     # Utils
     "TokenBucketLimiter",
     "rate_limit",
