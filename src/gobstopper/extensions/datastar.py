@@ -3,7 +3,7 @@ import asyncio
 import functools
 from enum import Enum
 from typing import AsyncGenerator, Callable, Any, Dict, Iterable, TypeAlias
-from ..http.response import StreamResponse
+from ..http.response import StreamResponse, Response
 from ..html._types import HasHtml, Renderable
 
 FragmentLike: TypeAlias = str | HasHtml | Renderable
@@ -87,6 +87,14 @@ class Datastar:
 
     # Default free CDN URL
     _CDN_URL = "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.8/bundles/datastar.js"
+
+    @staticmethod
+    def _event(event_name: str, data_lines: list[str]) -> str:
+        out = f"event: {event_name}\n"
+        for line in data_lines:
+            out += f"data: {line}\n"
+        out += "\n"
+        return out
 
     @staticmethod
     def script_tag(pro_src: str = None) -> str:
@@ -217,11 +225,7 @@ class Datastar:
 
         data_lines.append(f"elements {fragment}")
 
-        output = "event: datastar-patch-elements\n"
-        for line in data_lines:
-            output += f"data: {line}\n"
-        output += "\n"
-        return output
+        return Datastar._event("datastar-patch-elements", data_lines)
 
     @staticmethod
     def merge_many(
@@ -265,20 +269,95 @@ class Datastar:
             >>> # Only set if not already defined
             >>> Datastar.patch_signals({"userId": 123}, only_if_missing=True)
         """
-        # Format signals as JavaScript object notation
-        signals_str = json.dumps(signals)
-
-        output = "event: datastar-patch-signals\n"
+        signals_str = json.dumps(signals, separators=(",", ":"))
+        data_lines: list[str] = []
         if only_if_missing:
-            output += "data: onlyIfMissing true\n"
-        output += f"data: signals {signals_str}\n"
-        output += "\n"
-        return output
+            data_lines.append("onlyIfMissing true")
+        data_lines.append(f"signals {signals_str}")
+        return Datastar._event("datastar-patch-signals", data_lines)
 
     @staticmethod
     def signal(signal: str) -> str:
-        """Raw signal helper."""
-        return f"data: {signal}\n\n"
+        """Raw signal helper with SSE-safe line splitting."""
+        lines = signal.splitlines() or [signal]
+        out = ""
+        for line in lines:
+            out += f"data: {line}\n"
+        out += "\n"
+        return out
+
+    @staticmethod
+    def redirect(url: str) -> str:
+        """Emit a lightweight redirect via script patch."""
+        script = f"<script>window.location.href={json.dumps(url)};</script>"
+        return Datastar.merge_fragments(
+            script, selector="body", merge_mode=MergeMode.APPEND
+        )
+
+
+class DatastarResponse(Response):
+    """Convenience response for Datastar SSE payloads."""
+
+    def __init__(
+        self,
+        payload: str = "",
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ):
+        merged_headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        if headers:
+            merged_headers.update(headers)
+        super().__init__(
+            payload,
+            status=status,
+            headers=merged_headers,
+            content_type="text/event-stream",
+        )
+
+
+def datastar_response(
+    *events: str,
+    patch: dict[str, Any] | None = None,
+    merge: Iterable[
+        FragmentLike | tuple[FragmentLike, str | None, MergeMode, int | None]
+    ]
+    | None = None,
+    redirect_to: str | None = None,
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+) -> DatastarResponse:
+    """Build a Datastar SSE response from common operations.
+
+    Args:
+        events: Pre-formatted Datastar event strings.
+        patch: Signal patch payload for ``datastar-patch-signals``.
+        merge: Iterable of fragments or tuples ``(fragment, selector, mode, settle)``.
+        redirect_to: If set, appends a redirect event.
+    """
+    chunks: list[str] = [e for e in events if e]
+
+    if patch is not None:
+        chunks.append(Datastar.patch_signals(patch))
+
+    if merge is not None:
+        for item in merge:
+            if isinstance(item, tuple):
+                fragment, selector, mode, settle = item
+                chunks.append(
+                    Datastar.merge_fragments(
+                        fragment,
+                        selector=selector,
+                        merge_mode=mode,
+                        settling_time=settle,
+                    )
+                )
+            else:
+                chunks.append(Datastar.merge_fragments(item))
+
+    if redirect_to:
+        chunks.append(Datastar.redirect(redirect_to))
+
+    return DatastarResponse("".join(chunks), status=status, headers=headers)
 
 
 def datastar_stream(

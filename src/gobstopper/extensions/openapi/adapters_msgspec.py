@@ -32,6 +32,7 @@ See Also:
     - msgspec documentation: https://jcristharif.com/msgspec/
     - TypeRegistry: Type adapter registry
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, get_type_hints
@@ -128,6 +129,12 @@ class MsgspecAdapter:
             # msgspec treats default=... or default_factory as optional; if no default present, it's required
             if not has_default:
                 required.append(name)
+            else:
+                try:
+                    props[name] = dict(schema)
+                    props[name]["default"] = val
+                except Exception:
+                    props[name] = schema
 
         obj_schema: Dict[str, Any] = {
             "type": "object",

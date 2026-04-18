@@ -35,6 +35,7 @@ See Also:
     - Python dataclasses: https://docs.python.org/3/library/dataclasses.html
     - TypeRegistry: Type adapter registry
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, get_type_hints
@@ -141,7 +142,14 @@ class DataclassesAdapter:
         required: list[str] = []
         for f in dc.fields(tp):
             ft = hints.get(f.name, f.type)
-            props[f.name] = registry.resolve_schema(ft)
+            field_schema = registry.resolve_schema(ft)
+            if f.default is not dc.MISSING:
+                try:
+                    field_schema = dict(field_schema)
+                    field_schema["default"] = f.default
+                except Exception:
+                    pass
+            props[f.name] = field_schema
             if f.default is dc.MISSING and f.default_factory is dc.MISSING:  # type: ignore[attr-defined]
                 required.append(f.name)
 

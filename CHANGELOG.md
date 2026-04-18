@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.5.0] - 2026-04-18
+
+### CLI + Runtime Ergonomics
+
+- Added module entrypoint support via `python -m gobstopper ...` (`src/gobstopper/__main__.py`).
+- Improved CLI error guidance when Click is unavailable with explicit install and invocation hints.
+- Promoted `click` to core dependencies so `gobstopper` script installs reliably in standard environments.
+
+### Request / Response Enhancements
+
+- Added content negotiation helpers on `Request`:
+  - `request.accepts(media_type)`
+  - `request.best_match(offers, default=None)`
+- Added `Request.bind(model, source="auto|json|form|multipart|query")` for typed request binding with validation and coercion.
+- Optimized `Response` header handling:
+  - case-insensitive header index cache
+  - RSGI header tuple cache
+  - safer invalidation when headers/cookies mutate
+
+### Datastar + HTML Ergonomics
+
+- Added first-class Datastar response composition API:
+  - `DatastarResponse`
+  - `datastar_response(...)`
+  - `Datastar.redirect(url)`
+- Improved SSE framing helpers in Datastar internals (`_event`, signal line-splitting).
+- Added trusted raw fragment helpers to `gobstopper.html`:
+  - `raw_html(...)`
+  - `raw_js(...)`
+  - `raw_css(...)`
+
+### Task Supervision
+
+- Added in-process task supervision API:
+  - `app.tasks.spawn(...)`
+  - `app.spawn_task(...)`
+- Supervised tasks are tracked and cancelled during graceful shutdown.
+
+### OpenAPI Expansion
+
+- Added **blueprint-scoped OpenAPI** support:
+  - `attach_openapi_blueprint(app, blueprint, ...)`
+  - per-scope spec/docs endpoints (not app-global only)
+- Extended `attach_openapi(...)` with path and scope controls:
+  - `path`, `redoc_path`, `elements_path`
+  - `include_mode="opt_in|auto"`
+  - `include_blueprints`, `include_prefixes`
+- Added optional OpenAPI validation pass:
+  - `validate_spec=True`
+  - `strict_validation=True`
+  - warning capture via `OpenAPIState.last_validation_warnings`
+- Improved schema adapters:
+  - better Union/Optional handling (incl. PEP 604 `|`)
+  - dataclass/msgspec default value emission into schemas
+
+### Notes
+
+- This release includes additive API surface and behavioral improvements across CLI, OpenAPI, Datastar, and HTTP primitives.
+- Existing decorator-based OpenAPI mode remains default (`include_mode="opt_in"`) for backward compatibility.
+
 ## [0.4.2] - 2026-04-04
 
 ### Lifecycle + MCP + DX Fixes

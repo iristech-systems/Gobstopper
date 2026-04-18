@@ -28,16 +28,20 @@ See Also:
     - typing_adapters: Type adapter registry and protocol
     - decorators: Metadata attachment decorators
 """
+
 from __future__ import annotations
 
 import re
 import inspect
+import logging
 from typing import Any, Optional
 
 from .typing_adapters import TypeRegistry, FallbackAdapter
 from .adapters_msgspec import MsgspecAdapter
 from .adapters_typeddict import TypedDictAdapter
 from .adapters_dataclasses import DataclassesAdapter
+
+logger = logging.getLogger(__name__)
 
 # Lightweight typing schema mapping; kept for potential inline fallbacks (unused now)
 _SIMPLE_TYPE_MAP = {
@@ -48,7 +52,14 @@ _SIMPLE_TYPE_MAP = {
 }
 
 
-def build_default_info(title: str, version: str, description: Optional[str], tos: Optional[str], contact: Optional[dict], license: Optional[dict]):
+def build_default_info(
+    title: str,
+    version: str,
+    description: Optional[str],
+    tos: Optional[str],
+    contact: Optional[dict],
+    license: Optional[dict],
+):
     """Build an OpenAPI info object from individual fields.
 
     Constructs the required 'info' section of an OpenAPI specification with
@@ -151,10 +162,12 @@ def _oa_path_from(pattern: str) -> str:
         >>> _oa_path_from("/items/<uuid:item_id>/details")
         '/items/{item_id}/details'
     """
+
     def repl(m: re.Match[str]):
         token = m.group(1)
         name = token.split(":", 1)[1] if ":" in token else token
         return "{" + name + "}"
+
     return re.sub(_PARAM_TOKEN, repl, pattern)
 
 
@@ -197,12 +210,14 @@ def _collect_path_params(pattern: str):
             conv, name = token.split(":", 1)
         else:
             conv, name = None, token
-        params.append({
-            "name": name,
-            "in": "path",
-            "required": True,
-            "schema": _param_schema_for(conv)
-        })
+        params.append(
+            {
+                "name": name,
+                "in": "path",
+                "required": True,
+                "schema": _param_schema_for(conv),
+            }
+        )
     return params
 
 
@@ -286,6 +301,87 @@ class OpenAPIGenerator:
         """
         self.app = app
         self.state = state
+
+    def _route_in_scope(self, rh: Any) -> bool:
+        include_blueprints = self.state.config.get("include_blueprints") or []
+        include_prefixes = self.state.config.get("include_prefixes") or []
+
+        if include_blueprints:
+            bp_names = {
+                bp if isinstance(bp, str) else getattr(bp, "name", None)
+                for bp in include_blueprints
+            }
+            bp_names.discard(None)
+            chain = getattr(rh, "blueprint_chain", []) or []
+            route_bp_names = {getattr(bp, "name", None) for bp in chain}
+            route_bp_names.discard(None)
+            if not (route_bp_names & bp_names):
+                return False
+
+        if include_prefixes:
+            if not any(rh.pattern.startswith(pfx) for pfx in include_prefixes):
+                return False
+
+        return True
+
+    def _validate_spec(self, spec: dict[str, Any]) -> list[str]:
+        warnings: list[str] = []
+
+        if not isinstance(spec.get("openapi"), str):
+            warnings.append("Top-level 'openapi' must be a string")
+
+        info = spec.get("info")
+        if not isinstance(info, dict):
+            warnings.append("Top-level 'info' must be an object")
+        else:
+            if not info.get("title"):
+                warnings.append("info.title is required")
+            if not info.get("version"):
+                warnings.append("info.version is required")
+
+        paths = spec.get("paths")
+        if not isinstance(paths, dict):
+            warnings.append("Top-level 'paths' must be an object")
+            return warnings
+
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                warnings.append(f"Path item for '{path}' must be an object")
+                continue
+            for method, op in path_item.items():
+                if method not in {
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "delete",
+                    "options",
+                    "head",
+                    "trace",
+                }:
+                    continue
+                if not isinstance(op, dict):
+                    warnings.append(
+                        f"Operation '{method.upper()} {path}' must be an object"
+                    )
+                    continue
+                responses = op.get("responses")
+                if not isinstance(responses, dict) or not responses:
+                    warnings.append(
+                        f"Operation '{method.upper()} {path}' must define responses"
+                    )
+                else:
+                    for code, resp in responses.items():
+                        if not isinstance(resp, dict):
+                            warnings.append(
+                                f"Response '{code}' on '{method.upper()} {path}' must be an object"
+                            )
+                            continue
+                        if "description" not in resp:
+                            warnings.append(
+                                f"Response '{code}' on '{method.upper()} {path}' missing description"
+                            )
+        return warnings
 
     def build_spec(self) -> dict[str, Any]:
         """Build a complete OpenAPI 3.1 specification from the application routes.
@@ -405,12 +501,16 @@ class OpenAPIGenerator:
 
         paths: dict[str, Any] = {}
 
+        include_mode = self.state.config.get("include_mode", "opt_in")
+
         for rh in getattr(self.app, "_all_routes", []) or []:
             if getattr(rh, "is_websocket", False):
                 continue
+            if not self._route_in_scope(rh):
+                continue
             # Only include routes explicitly decorated with OpenAPI metadata
             meta = getattr(rh.handler, "__openapi__", {}) or {}
-            if not meta:
+            if include_mode == "opt_in" and not meta:
                 continue
 
             path_oa = _oa_path_from(rh.pattern)
@@ -424,9 +524,17 @@ class OpenAPIGenerator:
             for method in rh.methods:
                 m = method.lower()
                 op: dict[str, Any] = {
-                    "operationId": meta.get("operationId") or f"{m}_{path_oa.strip('/').replace('/', '_') or 'root'}",
+                    "operationId": meta.get("operationId")
+                    or f"{m}_{path_oa.strip('/').replace('/', '_') or 'root'}",
                     "responses": {},
                 }
+                if include_mode == "auto" and "doc" not in meta:
+                    op["summary"] = (
+                        getattr(rh.handler, "__name__", op["operationId"])
+                        .replace("_", " ")
+                        .strip()
+                        .title()
+                    )
                 # Merge doc fields allowing all OpenAPI fields
                 doc_fields = meta.get("doc", {})
                 for k, v in doc_fields.items():
@@ -478,7 +586,9 @@ class OpenAPIGenerator:
 
         spec: dict[str, Any] = {
             "openapi": self.state.config.get("openapi", "3.1.0"),
-            "info": self.state.config.get("info", {"title": "Gobstopper", "version": "0.1.0"}),
+            "info": self.state.config.get(
+                "info", {"title": "Gobstopper", "version": "0.1.0"}
+            ),
             "paths": paths,
         }
         # Top-level optional sections
@@ -494,4 +604,20 @@ class OpenAPIGenerator:
             schemas.update(registry.components)
             comps["schemas"] = schemas
             spec["components"] = comps
+
+        if self.state.config.get("validate_spec", False):
+            warnings = self._validate_spec(spec)
+            self.state.last_validation_warnings = warnings
+            if warnings:
+                if self.state.config.get("strict_validation", False):
+                    raise ValueError(
+                        "OpenAPI validation failed: " + "; ".join(warnings)
+                    )
+                logger.warning(
+                    "OpenAPI spec generated with %d validation warning(s): %s",
+                    len(warnings),
+                    warnings,
+                )
+        else:
+            self.state.last_validation_warnings = []
         return spec

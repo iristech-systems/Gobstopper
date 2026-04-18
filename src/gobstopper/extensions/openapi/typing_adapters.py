@@ -40,11 +40,14 @@ See Also:
     - adapters_msgspec: Adapter for msgspec.Struct
     - OpenAPI 3.1 Schema: https://spec.openapis.org/oas/v3.1.0#schema-object
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Protocol, Tuple, get_args, get_origin
 import hashlib
 import enum
+import types
+import typing
 
 
 class TypeAdapter(Protocol):
@@ -75,6 +78,7 @@ class TypeAdapter(Protocol):
                         "properties": properties
                     })
     """
+
     def can_handle(self, tp: Any) -> bool:
         """Check if this adapter can handle the given type.
 
@@ -228,7 +232,9 @@ class TypeRegistry:
             - The first call registers the schema, subsequent calls reuse it
         """
         # For classes and Enums, register a component and return $ref; for simple schemas, inline
-        if isinstance(tp, type) and (hasattr(tp, "__mro__") and tp not in (str, int, float, bool, bytes)):
+        if isinstance(tp, type) and (
+            hasattr(tp, "__mro__") and tp not in (str, int, float, bool, bytes)
+        ):
             name = _stable_name(tp)
             if name not in self.components:
                 self.components[name] = schema
@@ -266,6 +272,7 @@ class FallbackAdapter:
         >>> adapter.to_json_schema(list[str], registry)
         {'type': 'array', 'items': {'type': 'string'}}
     """
+
     SIMPLE: Dict[Any, Dict[str, Any]] = {
         str: {"type": "string"},
         int: {"type": "integer"},
@@ -300,23 +307,20 @@ class FallbackAdapter:
                 schema["type"] = "integer"
             return registry.ref_or_inline(tp, schema)
 
-        # Optional[T] == Union[T, None]
-        if origin is Optional:
-            inner = args[0]
-            inner_schema = registry.resolve_schema(inner)
-            return {"anyOf": [inner_schema, {"type": "null"}]}
-
-        # Union
-        if origin is None and hasattr(tp, "__args__") and getattr(tp, "__origin__", None) is None and getattr(tp, "__module__", "") == "typing":
-            # Older typing forms; fallback do nothing special
-            pass
-        if origin is __import__("typing").Union:  # type: ignore[attr-defined]
+        # Union / Optional[T] (supports typing.Union and PEP 604 '|')
+        if origin in (typing.Union, types.UnionType):
+            non_null = [a for a in args if a is not type(None)]
+            has_null = len(non_null) != len(args)
+            if has_null and len(non_null) == 1:
+                inner_schema = registry.resolve_schema(non_null[0])
+                return {"anyOf": [inner_schema, {"type": "null"}]}
             subs = [registry.resolve_schema(a) for a in args]
             return {"oneOf": subs}
 
         # Literal
         try:
             from typing import Literal  # py3.8+
+
             if origin is Literal:
                 vals = list(args)
                 schema: Dict[str, Any] = {"enum": vals}
@@ -331,12 +335,14 @@ class FallbackAdapter:
 
         # List[T]
         from typing import List, Sequence
+
         if origin in (list, List, Sequence):
             item_tp = args[0] if args else Any
             return {"type": "array", "items": registry.resolve_schema(item_tp)}
 
         # Dict[str, V]
         from typing import Dict as TDict, Mapping
+
         if origin in (dict, TDict, Mapping):
             key_tp = args[0] if args else str
             val_tp = args[1] if len(args) > 1 else Any
@@ -344,11 +350,15 @@ class FallbackAdapter:
             if key_tp not in (str, Any):
                 # degrade to string
                 key_tp = str
-            return {"type": "object", "additionalProperties": registry.resolve_schema(val_tp)}
+            return {
+                "type": "object",
+                "additionalProperties": registry.resolve_schema(val_tp),
+            }
 
         # Dataclass naive support (treat as object with no properties for now)
         try:
             import dataclasses
+
             if isinstance(tp, type) and dataclasses.is_dataclass(tp):
                 # minimal: no fields expansion yet
                 schema = {"type": "object"}

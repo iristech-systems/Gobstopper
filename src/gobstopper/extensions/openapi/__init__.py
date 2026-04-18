@@ -57,6 +57,7 @@ See Also:
     - generator: Core OpenAPI spec generation logic
     - ui: Interactive documentation UI generators
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -68,6 +69,7 @@ from .decorators import doc, response, request_body, param, security
 
 __all__ = [
     "attach_openapi",
+    "attach_openapi_blueprint",
     "OpenAPIGenerator",
     "build_default_info",
     "doc",
@@ -102,6 +104,7 @@ class OpenAPIState:
         """
         self.config = config
         self._cache: Optional[dict[str, Any]] = None
+        self.last_validation_warnings: list[str] = []
 
     def invalidate(self):
         """Clear the cached OpenAPI specification.
@@ -130,8 +133,16 @@ def attach_openapi(
     components: dict | None = None,
     security: list[dict] | None = None,
     openapi: str = DEFAULT_OPENAPI_VERSION,
+    path: str = "/openapi.json",
+    redoc_path: str | None = None,
+    elements_path: str | None = None,
     enable_redoc: bool = True,
     enable_elements: bool = True,
+    include_mode: str = "opt_in",
+    include_blueprints: list[Any] | None = None,
+    include_prefixes: list[str] | None = None,
+    validate_spec: bool = False,
+    strict_validation: bool = False,
 ):
     """Attach OpenAPI 3.1 specification generation and documentation UI to a Gobstopper app.
 
@@ -247,9 +258,19 @@ def attach_openapi(
         - ReDoc: https://redocly.github.io/redoc/
         - Stoplight Elements: https://stoplight.io/open-source/elements
     """
+    if include_mode not in {"opt_in", "auto"}:
+        raise ValueError("include_mode must be 'opt_in' or 'auto'")
+
     config: dict[str, Any] = {
         "openapi": openapi,
-        "info": build_default_info(title, version, description, terms_of_service, contact, license),
+        "info": build_default_info(
+            title, version, description, terms_of_service, contact, license
+        ),
+        "include_mode": include_mode,
+        "include_blueprints": include_blueprints or [],
+        "include_prefixes": include_prefixes or [],
+        "validate_spec": validate_spec,
+        "strict_validation": strict_validation,
     }
     if servers:
         config["servers"] = servers
@@ -266,23 +287,91 @@ def attach_openapi(
 
     generator = OpenAPIGenerator(app, state)
 
-    @app.get("/openapi.json")
+    @app.get(path)
     async def openapi_json(req):  # noqa: F811
         if state._cache is None:
             state._cache = generator.build_spec()
         return JSONResponse(state._cache)
 
+    docs_base = path.rsplit("/", 1)[0]
+    if docs_base == "":
+        docs_base = "/"
+
+    if redoc_path is None:
+        redoc_path = (
+            "/redoc" if path == "/openapi.json" else f"{docs_base.rstrip('/')}/redoc"
+        )
+    if elements_path is None:
+        elements_path = (
+            "/elements"
+            if path == "/openapi.json"
+            else f"{docs_base.rstrip('/')}/elements"
+        )
+
     if enable_redoc:
-        @app.get("/redoc")
+
+        @app.get(redoc_path)
         async def redoc(req):  # noqa: F811
-            return Response(redoc_html("/openapi.json"), status=200, content_type="text/html; charset=utf-8")
+            return Response(
+                redoc_html(path), status=200, content_type="text/html; charset=utf-8"
+            )
 
     if enable_elements:
-        @app.get("/elements")
+
+        @app.get(elements_path)
         async def elements(req):  # noqa: F811
-            return Response(stoplight_elements_html("/openapi.json"), status=200, content_type="text/html; charset=utf-8")
+            return Response(
+                stoplight_elements_html(path),
+                status=200,
+                content_type="text/html; charset=utf-8",
+            )
 
     # expose simple API on app for invalidation/customization
     app.openapi = state  # type: ignore[attr-defined]
+    registry = getattr(app, "openapi_registry", None)
+    if registry is None:
+        registry = {}
+        app.openapi_registry = registry  # type: ignore[attr-defined]
+    registry[path] = state
 
     return state
+
+
+def attach_openapi_blueprint(
+    app,
+    blueprint,
+    *,
+    path: str | None = None,
+    enable_redoc: bool = True,
+    enable_elements: bool = True,
+    include_mode: str = "opt_in",
+    validate_spec: bool = False,
+    strict_validation: bool = False,
+    **kwargs,
+):
+    """Attach an OpenAPI spec endpoint scoped to a single blueprint.
+
+    Example:
+        attach_openapi_blueprint(app, projects_bp)
+        # => /projects/openapi.json, /projects/redoc, /projects/elements
+    """
+    bp_name = getattr(blueprint, "name", "blueprint")
+    bp_prefix = getattr(blueprint, "url_prefix", None) or ""
+    if bp_prefix and not bp_prefix.startswith("/"):
+        bp_prefix = "/" + bp_prefix
+
+    spec_path = path or f"{bp_prefix.rstrip('/')}/openapi.json"
+    if not spec_path.startswith("/"):
+        spec_path = "/" + spec_path
+
+    return attach_openapi(
+        app,
+        path=spec_path,
+        enable_redoc=enable_redoc,
+        enable_elements=enable_elements,
+        include_mode=include_mode,
+        include_blueprints=[blueprint],
+        validate_spec=validate_spec,
+        strict_validation=strict_validation,
+        **kwargs,
+    )

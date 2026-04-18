@@ -54,53 +54,55 @@ from ..log import log
 
 class Response:
     """HTTP response with flexible content types and headers.
-    
+
     Represents an HTTP response with configurable status code, headers,
     and body content. Supports automatic content type detection and
     header management for RSGI protocol compatibility.
-    
+
     Args:
         body: Response content as string or bytes
         status: HTTP status code (default: 200)
         headers: HTTP headers as dict (optional)
         content_type: MIME type override (auto-detected if not provided)
-        
+
     Attributes:
         body: Response body content
         status: HTTP status code
         headers: Response headers dict
-        
+
     Examples:
         Text response:
-        
+
         >>> return Response("Hello World")
         >>> return Response("Error message", status=400)
-        
+
         HTML response:
-        
+
         >>> html = "<h1>Welcome</h1>"
         >>> return Response(html, content_type="text/html")
-        
+
         Custom headers:
-        
+
         >>> return Response("OK", headers={"X-Custom": "value"})
-        
+
         Binary content:
-        
+
         >>> return Response(image_bytes, content_type="image/png")
-        
+
     Note:
         Content-Type is auto-detected: string content defaults to text/html,
         bytes content defaults to application/octet-stream.
     """
-    
-    def __init__(self,
-                 body: Any = "",
-                 status: int = 200,
-                 headers: dict[str, str] | None = None,
-                 content_type: str | None = None):
+
+    def __init__(
+        self,
+        body: Any = "",
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        content_type: str | None = None,
+    ):
         """Initialize the response.
-        
+
         Args:
             body: Response content. Can be string, bytes, or object with __html__ method.
             status: HTTP status code (default: 200)
@@ -116,7 +118,11 @@ class Response:
         self.status = status
         self._headers_dict = headers or {}
         self._cookies: list[str] = []
-        
+        self._header_index: dict[str, str] = {
+            k.lower(): k for k in self._headers_dict.keys()
+        }
+        self._rsgi_headers_cache: list[tuple[str, str]] | None = None
+
         # Handle different body types and content-type detection
         if isinstance(body, str):
             self.body = body.encode("utf-8")
@@ -138,32 +144,43 @@ class Response:
 
     def _get_header(self, name: str) -> str | None:
         """Get a header value case-insensitively."""
-        name_lower = name.lower()
-        for k, v in self._headers_dict.items():
-            if k.lower() == name_lower:
-                return v
-        return None
+        if len(self._header_index) != len(self._headers_dict):
+            self._header_index = {k.lower(): k for k in self._headers_dict.keys()}
+            self._rsgi_headers_cache = None
+        key = self._header_index.get(name.lower())
+        if key is None:
+            return None
+        return self._headers_dict.get(key)
 
     def _set_header(self, name: str, value: str):
         """Set a header value, replacing existing case-insensitively."""
+        if len(self._header_index) != len(self._headers_dict):
+            self._header_index = {k.lower(): k for k in self._headers_dict.keys()}
         name_lower = name.lower()
-        found = False
-        for k in list(self._headers_dict.keys()): # Iterate over a copy to allow modification
-            if k.lower() == name_lower:
-                self._headers_dict[k] = value
-                found = True
-                break
-        if not found:
-            self._headers_dict[name] = value
+        existing = self._header_index.get(name_lower)
+        key = existing or name
+        self._headers_dict[key] = value
+        self._header_index[name_lower] = key
+        self._rsgi_headers_cache = None
 
     @property
     def headers(self) -> dict[str, str]:
         """Return the response headers."""
         return self._headers_dict
 
-    def set_cookie(self, name: str, value: str, *, path: str = "/", domain: str | None = None,
-                   max_age: int | None = None, expires: str | None = None,
-                   secure: bool = True, httponly: bool = True, samesite: str | None = "Strict"):
+    def set_cookie(
+        self,
+        name: str,
+        value: str,
+        *,
+        path: str = "/",
+        domain: str | None = None,
+        max_age: int | None = None,
+        expires: str | None = None,
+        secure: bool = True,
+        httponly: bool = True,
+        samesite: str | None = "Strict",
+    ):
         """Set a cookie with comprehensive security options.
 
         Adds a Set-Cookie header to the response with secure defaults appropriate
@@ -219,27 +236,42 @@ class Response:
         # Enforce secure defaults in production unless explicitly overridden via env flag
         try:
             env = os.getenv("ENV", "development").lower()
-            allow_insecure = os.getenv("WOPR_ALLOW_INSECURE_COOKIES", "false").lower() == "true"
+            allow_insecure = (
+                os.getenv("WOPR_ALLOW_INSECURE_COOKIES", "false").lower() == "true"
+            )
             if env == "production" and not allow_insecure:
                 if not secure:
-                    log.warning("Overriding insecure cookie: Secure=False in production; forcing Secure=True")
+                    log.warning(
+                        "Overriding insecure cookie: Secure=False in production; forcing Secure=True"
+                    )
                     secure = True
                 if not httponly:
-                    log.warning("Overriding insecure cookie: HttpOnly=False in production; forcing HttpOnly=True")
+                    log.warning(
+                        "Overriding insecure cookie: HttpOnly=False in production; forcing HttpOnly=True"
+                    )
                     httponly = True
                 if samesite is None:
-                    log.warning("Overriding insecure cookie: SameSite not set in production; forcing SameSite=Lax")
+                    log.warning(
+                        "Overriding insecure cookie: SameSite not set in production; forcing SameSite=Lax"
+                    )
                     samesite = "Lax"
         except Exception:
             pass
         parts = [f"{name}={value}", f"Path={path}"]
-        if domain: parts.append(f"Domain={domain}")
-        if max_age is not None: parts.append(f"Max-Age={max_age}")
-        if expires: parts.append(f"Expires={expires}")
-        if secure: parts.append("Secure")
-        if httponly: parts.append("HttpOnly")
-        if samesite: parts.append(f"SameSite={samesite}")
+        if domain:
+            parts.append(f"Domain={domain}")
+        if max_age is not None:
+            parts.append(f"Max-Age={max_age}")
+        if expires:
+            parts.append(f"Expires={expires}")
+        if secure:
+            parts.append("Secure")
+        if httponly:
+            parts.append("HttpOnly")
+        if samesite:
+            parts.append(f"SameSite={samesite}")
         self._cookies.append("; ".join(parts))
+        self._rsgi_headers_cache = None
 
     def delete_cookie(self, name: str, *, path: str = "/", domain: str | None = None):
         """Delete a cookie by setting it to expire immediately.
@@ -304,7 +336,12 @@ class Response:
         See Also:
             :class:`Gobstopper`: Main application class handling RSGI protocol
         """
-        items = [(k, v) for k, v in self.headers.items()]
+        if len(self._header_index) != len(self._headers_dict):
+            self._header_index = {k.lower(): k for k in self._headers_dict.keys()}
+            self._rsgi_headers_cache = None
+        if self._rsgi_headers_cache is None:
+            self._rsgi_headers_cache = [(k, v) for k, v in self.headers.items()]
+        items = list(self._rsgi_headers_cache)
         for c in self._cookies:
             items.append(("set-cookie", c))
         return items
@@ -312,171 +349,176 @@ class Response:
 
 class JSONResponse(Response):
     """HTTP response for JSON data with automatic, high-performance serialization.
-    
+
     Convenience class for returning JSON responses with proper Content-Type
     headers and optimized JSON serialization using `msgspec`.
-    
+
     Args:
         data: Python object to serialize as JSON (dict, list, primitives)
         status: HTTP status code (default: 200)
         **kwargs: Additional arguments passed to parent Response class
-        
+
     Examples:
         Dictionary response:
-        
+
         >>> return JSONResponse({"message": "Success", "data": results})
-        
+
         List response:
-        
+
         >>> return JSONResponse([1, 2, 3, 4, 5])
-        
+
         With custom status:
-        
+
         >>> return JSONResponse({"error": "Not found"}, status=404)
-        
+
     Note:
         Uses high-performance `msgspec` for serialization.
         Automatically sets Content-Type to 'application/json'.
-        
+
     See Also:
         :class:`Response`: Base response class
     """
-    
+
     def __init__(self, data: Any, status: int = 200, **kwargs):
         body = msgspec.json.encode(data)
-        super().__init__(body, status, content_type='application/json', **kwargs)
+        super().__init__(body, status, content_type="application/json", **kwargs)
 
 
 class FileResponse(Response):
     """HTTP response for serving files with proper headers and MIME detection.
-    
+
     Optimized response class for serving static files, downloads, and attachments.
     Automatically detects MIME types, sets appropriate headers, and handles
     file serving through the RSGI protocol.
-    
+
     Args:
         path: File path as string or Path object
         filename: Download filename (defaults to basename of path)
-        status: HTTP status code (default: 200)  
+        status: HTTP status code (default: 200)
         headers: Additional headers (optional)
-        
+
     Attributes:
         file_path: Resolved file path as string
         filename: Filename for Content-Disposition header
-        
+
     Examples:
         Serve static file:
-        
+
         >>> @app.get("/download/<filename>")
         >>> async def download(request, filename):
         ...     return FileResponse(f"uploads/{filename}")
-        
+
         Force download with custom name:
-        
+
         >>> return FileResponse("report.pdf", filename="monthly_report.pdf")
-        
+
         Image serving:
-        
+
         >>> @app.get("/images/<image_id>")
         >>> async def serve_image(request, image_id):
         ...     path = f"images/{image_id}.jpg"
         ...     return FileResponse(path)
-        
+
     Note:
         Automatically sets Content-Type based on file extension.
         Sets Content-Disposition: attachment for download behavior.
         File path resolution and existence checking is handled by RSGI protocol.
-        
+
     See Also:
         :class:`Response`: Base response class
         :class:`StreamResponse`: For streaming large files
     """
-    
-    def __init__(self, path: str | Path,
-                 filename: str | None = None,
-                 status: int = 200,
-                 headers: dict[str, str] | None = None):
+
+    def __init__(
+        self,
+        path: str | Path,
+        filename: str | None = None,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ):
         self.file_path = str(path)
         self.filename = filename or os.path.basename(self.file_path)
-        
+
         content_type, _ = mimetypes.guess_type(self.file_path)
         if not content_type:
-            content_type = 'application/octet-stream'
-        
+            content_type = "application/octet-stream"
+
         headers = headers or {}
-        headers['content-type'] = content_type
-        headers['content-disposition'] = f'attachment; filename="{self.filename}"'
-        
+        headers["content-type"] = content_type
+        headers["content-disposition"] = f'attachment; filename="{self.filename}"'
+
         super().__init__("", status, headers)
 
 
 class StreamResponse:
     """HTTP streaming response for real-time data and large content.
-    
+
     Enables streaming HTTP responses for server-sent events, chunked transfer
     encoding, and progressive content delivery. Ideal for large datasets,
     real-time updates, and template streaming.
-    
+
     Args:
         generator: Async generator function that yields string or bytes chunks
         status: HTTP status code (default: 200)
         headers: Additional headers (optional)
         content_type: MIME type (default: 'text/plain')
-        
+
     Attributes:
         generator: Async generator for content chunks
         status: HTTP status code
         headers: Response headers dict
-        
+
     Examples:
         Server-sent events:
-        
+
         >>> @app.get("/events")
         >>> async def stream_events(request):
         ...     async def event_generator():
         ...         for i in range(100):
         ...             yield f"data: Event {i}\\n\\n"
         ...             await asyncio.sleep(1)
-        ...     return StreamResponse(event_generator(), 
+        ...     return StreamResponse(event_generator(),
         ...                         content_type="text/event-stream")
-        
+
         Large data streaming:
-        
+
         >>> @app.get("/large-csv")
         >>> async def stream_csv(request):
         ...     async def csv_generator():
         ...         yield "id,name,email\\n"
         ...         async for user in get_all_users_stream():
         ...             yield f"{user.id},{user.name},{user.email}\\n"
-        ...     return StreamResponse(csv_generator(), 
+        ...     return StreamResponse(csv_generator(),
         ...                         content_type="text/csv")
-        
+
         Template streaming (with Rust engine):
-        
+
         >>> async def stream_template():
-        ...     return await app.render_template("large_page.html", 
-        ...                                     stream=True, 
+        ...     return await app.render_template("large_page.html",
+        ...                                     stream=True,
         ...                                     data=huge_dataset)
-        
+
     Note:
         Generator function must be async and yield string or bytes.
         Streaming reduces memory usage for large responses.
         Compatible with template streaming when using Rust engine.
-        
+
     See Also:
         :class:`Response`: Standard response class
         :meth:`Gobstopper.render_template`: Template rendering with streaming
     """
-    
-    def __init__(self,
-                 generator: Callable[[], Awaitable],
-                 status: int = 200,
-                 headers: dict[str, str] | None = None,
-                 content_type: str = 'text/plain'):
+
+    def __init__(
+        self,
+        generator: Callable[[], Awaitable],
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        content_type: str = "text/plain",
+    ):
         self.generator = generator
         self.status = status
         self.headers = headers or {}
-        self.headers['content-type'] = content_type
+        self.headers["content-type"] = content_type
 
 
 def redirect(location: str, status: int = 302) -> Response:
@@ -532,4 +574,4 @@ def redirect(location: str, status: int = 302) -> Response:
         :meth:`Gobstopper.url_for`: Build URLs for named routes
         :class:`Response`: Base response class
     """
-    return Response('', status=status, headers={'Location': location})
+    return Response("", status=status, headers={"Location": location})

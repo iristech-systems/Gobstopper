@@ -27,12 +27,29 @@ Features:
 from .core.app import Gobstopper
 from .core.blueprint import Blueprint
 from .http.request import Request
-from .http.response import Response, JSONResponse, FileResponse, StreamResponse, redirect
-from .http.helpers import (
-    jsonify, send_file, stream_template, abort, make_response,
-    send_from_directory, flatten_form_data, get_str
+from .http.response import (
+    Response,
+    JSONResponse,
+    FileResponse,
+    StreamResponse,
+    redirect,
 )
-from .http.notifications import notification, get_notifications, peek_notifications, clear_notifications
+from .http.helpers import (
+    jsonify,
+    send_file,
+    stream_template,
+    abort,
+    make_response,
+    send_from_directory,
+    flatten_form_data,
+    get_str,
+)
+from .http.notifications import (
+    notification,
+    get_notifications,
+    peek_notifications,
+    clear_notifications,
+)
 from .http.file_storage import FileStorage, secure_filename
 from .http.errors import HTTPException, UnsupportedMediaType, BodyValidationError
 from .http.routing import RouteHandler, use, register_converter
@@ -41,7 +58,13 @@ from .http.sse import format_sse, SSEStream
 from .http.problem import problem
 from .websocket.connection import WebSocket
 from .websocket.manager import WebSocketManager
-from .tasks.queue import TaskPriority, TaskStatus, TaskInfo, TaskQueue, should_run_background_workers
+from .tasks.queue import (
+    TaskPriority,
+    TaskStatus,
+    TaskInfo,
+    TaskQueue,
+    should_run_background_workers,
+)
 from .tasks.storage import TaskStorage
 from .templates.engine import TemplateEngine
 from .middleware import (
@@ -82,7 +105,7 @@ from . import extensions as extensions  # re-export subpackage for convenience
 # Testing utilities — not imported by default (keep test code out of prod paths)
 # Use: from gobstopper.testing import TestClient
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 __author__ = "Gobstopper Framework Team"
 __license__ = "MIT"
 
@@ -96,11 +119,9 @@ __all__ = [
     "FileResponse",
     "StreamResponse",
     "redirect",
-
     # WebSocket
     "WebSocket",
     "WebSocketManager",
-
     # Tasks
     "TaskPriority",
     "TaskStatus",
@@ -108,28 +129,23 @@ __all__ = [
     "TaskQueue",
     "TaskStorage",
     "should_run_background_workers",
-
     # Templates
     "TemplateEngine",
-
     # Middleware
     "StaticFileMiddleware",
     "CORSMiddleware",
     "SecurityMiddleware",
     "LimitsMiddleware",
     "RequestIDMiddleware",
-
     # Session Storage (AsyncRedisSessionStorage and PostgresSessionStorage require additional dependencies)
     "BaseSessionStorage",
     "AsyncBaseSessionStorage",
     "MemorySessionStorage",
     "AsyncRedisSessionStorage",  # Requires redis.asyncio
-    "PostgresSessionStorage",     # Requires asyncpg
-
+    "PostgresSessionStorage",  # Requires asyncpg
     # Utils
     "TokenBucketLimiter",
     "rate_limit",
-
     # Configuration
     "Config",
     "ServerConfig",
@@ -141,7 +157,6 @@ __all__ = [
     "RateLimitConfig",
     "LoggingConfig",
     "MetricsConfig",
-
     # HTTP Helpers
     "jsonify",
     "send_file",
@@ -151,41 +166,32 @@ __all__ = [
     "send_from_directory",
     "flatten_form_data",
     "get_str",
-
     # File Upload
     "FileStorage",
     "secure_filename",
-
     # Notifications
     "notification",
     "get_notifications",
     "peek_notifications",
     "clear_notifications",
-
     # Errors
     "HTTPException",
     "UnsupportedMediaType",
     "BodyValidationError",
-
     # RFC 7807 Problem Details
     "problem",
-
     # Routing
     "RouteHandler",
     "use",
     "register_converter",
-
     # Content Negotiation
     "negotiate",
     "negotiate_response",
-
     # Server-Sent Events
     "format_sse",
     "SSEStream",
-
     # Extensions
     "extensions",
-
     # Testing (standalone import: from gobstopper.testing import TestClient)
     # "TestClient",  # not exported here to keep test deps out of production
 ]

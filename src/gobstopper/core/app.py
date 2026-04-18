@@ -44,6 +44,23 @@ Middleware = Callable[
 ]
 MiddlewareTuple = tuple[Middleware, int]
 
+
+class TaskSupervisor:
+    """Small in-process task supervisor bound to a Gobstopper app."""
+
+    def __init__(self, app: "Gobstopper"):
+        self._app = app
+
+    def spawn(
+        self,
+        coro_or_func: Callable[..., Any] | Awaitable[Any],
+        *args,
+        name: str | None = None,
+    ) -> asyncio.Task:
+        """Spawn and track a background task for graceful shutdown."""
+        return self._app._spawn_supervised_task(coro_or_func, *args, name=name)
+
+
 try:
     from gobstopper._core import Router
 
@@ -231,6 +248,8 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
         # Recurring / scheduled tasks (@app.repeat)
         self._scheduled_tasks: list[dict] = []
         self._running_scheduled: list[asyncio.Task] = []
+        self._supervised_tasks: set[asyncio.Task] = set()
+        self.tasks = TaskSupervisor(self)
 
         # Routing
         self.rust_router_available = RUST_ROUTER_AVAILABLE
@@ -429,6 +448,47 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
             return func
 
         return decorator
+
+    def _spawn_supervised_task(
+        self,
+        coro_or_func: Callable[..., Any] | Awaitable[Any],
+        *args,
+        name: str | None = None,
+    ) -> asyncio.Task:
+        """Spawn and track an in-process async task."""
+        if asyncio.iscoroutine(coro_or_func):
+            coro = coro_or_func
+        elif asyncio.iscoroutinefunction(coro_or_func):
+            coro = coro_or_func(*args)
+        else:
+
+            async def _run_sync():
+                return coro_or_func(*args)
+
+            coro = _run_sync()
+
+        task = asyncio.create_task(coro, name=name)
+        self._supervised_tasks.add(task)
+
+        def _cleanup(t: asyncio.Task):
+            self._supervised_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                self.logger.exception("Supervised task failed", exc_info=exc)
+
+        task.add_done_callback(_cleanup)
+        return task
+
+    def spawn_task(
+        self,
+        coro_or_func: Callable[..., Any] | Awaitable[Any],
+        *args,
+        name: str | None = None,
+    ) -> asyncio.Task:
+        """Public convenience API to spawn supervised in-process tasks."""
+        return self._spawn_supervised_task(coro_or_func, *args, name=name)
 
     def before_request(self, func: Handler) -> Handler:
         """Register a before-request handler that runs before each HTTP request.
@@ -2067,13 +2127,18 @@ class Gobstopper(MiddlewareMixin, RouterMixin):
                 except Exception:
                     self.logger.exception("Error in shutdown hook")
         # Cancel recurring scheduled tasks
-        from contextlib import suppress
-
         for t in self._running_scheduled:
             t.cancel()
         if self._running_scheduled:
             await asyncio.gather(*self._running_scheduled, return_exceptions=True)
         self._running_scheduled.clear()
+
+        # Cancel supervised in-process tasks
+        for t in list(self._supervised_tasks):
+            t.cancel()
+        if self._supervised_tasks:
+            await asyncio.gather(*list(self._supervised_tasks), return_exceptions=True)
+        self._supervised_tasks.clear()
 
         # Shutdown task queue last
         try:

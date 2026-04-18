@@ -11,6 +11,7 @@ try:
     from granian.rsgi import Scope, HTTPProtocol
 except ImportError:
     from typing import TypedDict
+
     # Fallback types for development without Granian
     class Scope(TypedDict, total=True):
         proto: str
@@ -20,7 +21,8 @@ except ImportError:
         headers: Any
 
     class HTTPProtocol:
-        async def __call__(self): pass
+        async def __call__(self):
+            pass
 
 
 class Request:
@@ -89,16 +91,33 @@ class Request:
 
     # Use __slots__ for memory efficiency and faster attribute access
     __slots__ = (
-        'scope', 'protocol', '_body', '_json', '_form', '_files',
-        '_multipart_parsed', 'session', '_session_id', 'endpoint',
-        'view_args', 'url_rule', 'id', '_headers_dict', '_args', '_cookies',
-        'app', 'max_body_bytes', 'max_json_depth', '_security'
+        "scope",
+        "protocol",
+        "_body",
+        "_json",
+        "_form",
+        "_files",
+        "_multipart_parsed",
+        "session",
+        "_session_id",
+        "endpoint",
+        "view_args",
+        "url_rule",
+        "id",
+        "_headers_dict",
+        "_args",
+        "_cookies",
+        "app",
+        "max_body_bytes",
+        "max_json_depth",
+        "_security",
+        "_accept",
     )
 
     @property
     def csrf_token(self) -> str:
         """Get or generate a CSRF token for the current session.
-        
+
         Requires SecurityMiddleware to be installed.
         """
         # Retrieve security middleware instance from reserved slot
@@ -131,6 +150,7 @@ class Request:
         self._headers_dict = None
         self._args = None
         self._cookies = None
+        self._accept = None
 
     @property
     def client_ip(self) -> str:
@@ -170,15 +190,15 @@ class Request:
             ...     return {"status": "success"}
         """
         # Standard 'X-Forwarded-For' header
-        if 'x-forwarded-for' in self.headers:
-            return self.headers['x-forwarded-for'].split(',')[0].strip()
+        if "x-forwarded-for" in self.headers:
+            return self.headers["x-forwarded-for"].split(",")[0].strip()
 
         # Fallback to remote address from scope if available
-        if hasattr(self.scope, 'client') and self.scope.client:
+        if hasattr(self.scope, "client") and self.scope.client:
             return self.scope.client[0]
 
         return "unknown"
-        
+
     @property
     def method(self) -> str:
         """Get the HTTP request method.
@@ -198,7 +218,7 @@ class Request:
             ...         return {"action": "create", "data": data}
         """
         return self.scope.method
-    
+
     @property
     def path(self) -> str:
         """Get the request path without query string.
@@ -226,7 +246,7 @@ class Request:
             ...     return {"segments": segments}
         """
         return self.scope.path
-    
+
     @property
     def query_string(self) -> str:
         """Get the raw query string from the URL.
@@ -251,7 +271,7 @@ class Request:
             :attr:`args`: Parsed query parameters as dict
         """
         return self.scope.query_string
-    
+
     @property
     def args(self) -> dict[str, list[str]]:
         """Get parsed query parameters as a dictionary.
@@ -390,6 +410,72 @@ class Request:
             self._headers_dict = {str(k).lower(): v for k, v in raw_headers.items()}
         return self._headers_dict
 
+    def _parse_accept(self) -> list[tuple[str, float]]:
+        """Parse and cache Accept header entries sorted by quality."""
+        if self._accept is not None:
+            return self._accept
+
+        header = self.headers.get("accept", "*/*")
+        parsed: list[tuple[str, float]] = []
+        for part in header.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            media_type = part
+            q = 1.0
+            if ";" in part:
+                media_type, *params = [p.strip() for p in part.split(";")]
+                for param in params:
+                    if param.startswith("q="):
+                        try:
+                            q = float(param[2:])
+                        except ValueError:
+                            q = 0.0
+            parsed.append((media_type.lower(), q))
+
+        parsed.sort(key=lambda x: x[1], reverse=True)
+        self._accept = parsed
+        return parsed
+
+    def accepts(self, media_type: str) -> bool:
+        """Return True if request Accept header allows the media type."""
+        target = (media_type or "").lower()
+        if not target:
+            return False
+        t_type, _, t_sub = target.partition("/")
+
+        for accepted, q in self._parse_accept():
+            if q <= 0:
+                continue
+            if accepted == "*/*":
+                return True
+            a_type, _, a_sub = accepted.partition("/")
+            if a_type == t_type and (a_sub == "*" or a_sub == t_sub):
+                return True
+        return False
+
+    def best_match(
+        self, offers: list[str], default: Optional[str] = None
+    ) -> Optional[str]:
+        """Return the best accepted media type from offers."""
+        if not offers:
+            return default
+
+        normalized = [(o, o.lower()) for o in offers]
+
+        for media_type, q in self._parse_accept():
+            if q <= 0:
+                continue
+            if media_type == "*/*":
+                return offers[0]
+
+            m_type, _, m_sub = media_type.partition("/")
+            for candidate, cand_norm in normalized:
+                c_type, _, c_sub = cand_norm.partition("/")
+                if m_type == c_type and (m_sub == "*" or m_sub == c_sub):
+                    return candidate
+        return default
+
     @property
     def session_id(self) -> Optional[str]:
         """Get the current session ID if session middleware is enabled.
@@ -481,6 +567,7 @@ class Request:
             return app.logger
         # Fallback import to avoid circular references at module import time
         from ..log import log  # type: ignore
+
         return log
 
     @property
@@ -532,14 +619,14 @@ class Request:
             Response.delete_cookie(): Delete cookies
         """
         if self._cookies is None:
-            cookie_header = self.headers.get('cookie', '')
+            cookie_header = self.headers.get("cookie", "")
             self._cookies = {}
             if cookie_header:
                 # Parse cookie header: "name1=value1; name2=value2"
-                for cookie in cookie_header.split(';'):
+                for cookie in cookie_header.split(";"):
                     cookie = cookie.strip()
-                    if '=' in cookie:
-                        name, value = cookie.split('=', 1)
+                    if "=" in cookie:
+                        name, value = cookie.split("=", 1)
                         self._cookies[name.strip()] = value.strip()
         return self._cookies
 
@@ -580,8 +667,8 @@ class Request:
             Checks if Content-Type starts with 'application/json'.
             Also matches 'application/json; charset=utf-8' and similar variants.
         """
-        content_type = self.headers.get('content-type', '')
-        return content_type.startswith('application/json')
+        content_type = self.headers.get("content-type", "")
+        return content_type.startswith("application/json")
 
     @property
     def scheme(self) -> str:
@@ -616,11 +703,11 @@ class Request:
             Defaults to scope.proto from RSGI.
         """
         # Check for X-Forwarded-Proto header (proxy scenarios)
-        forwarded_proto = self.headers.get('x-forwarded-proto', '')
+        forwarded_proto = self.headers.get("x-forwarded-proto", "")
         if forwarded_proto:
-            return forwarded_proto.split(',')[0].strip()
+            return forwarded_proto.split(",")[0].strip()
         # Fallback to scope proto (RSGI uses 'proto' attribute, not dict 'scheme')
-        return getattr(self.scope, 'proto', 'http')
+        return getattr(self.scope, "proto", "http")
 
     @property
     def host(self) -> str:
@@ -652,11 +739,11 @@ class Request:
             Includes port number if non-standard (e.g., ':8000').
         """
         # Check for X-Forwarded-Host header
-        forwarded_host = self.headers.get('x-forwarded-host', '')
+        forwarded_host = self.headers.get("x-forwarded-host", "")
         if forwarded_host:
-            return forwarded_host.split(',')[0].strip()
+            return forwarded_host.split(",")[0].strip()
         # Fallback to Host header
-        return self.headers.get('host', 'localhost')
+        return self.headers.get("host", "localhost")
 
     @property
     def host_url(self) -> str:
@@ -809,9 +896,10 @@ class Request:
             body = await self.protocol()
             # Enforce max body size if configured on the instance
             try:
-                max_bytes = getattr(self, 'max_body_bytes', None)
+                max_bytes = getattr(self, "max_body_bytes", None)
                 if max_bytes is not None and body and len(body) > int(max_bytes):
                     from .errors import RequestTooLarge
+
                     raise RequestTooLarge("Request body too large")
             except Exception:
                 # If attribute missing or conversion fails, ignore and proceed
@@ -821,13 +909,13 @@ class Request:
 
     async def stream(self):
         """Stream the request body chunks asynchronously.
-        
+
         Yields chunks of the request body as they are received. This is useful for
         handling large uploads without loading the entire file into memory.
-        
+
         Yields:
              bytes: Chunks of request body data.
-             
+
         Examples:
             >>> @app.post("/upload/big")
             >>> async def upload_big(request: Request):
@@ -838,13 +926,13 @@ class Request:
             ...     return {"size": size}
         """
         if self._body is not None:
-             # Already buffered, yield the whole thing as one chunk
-             yield self._body
-             return
+            # Already buffered, yield the whole thing as one chunk
+            yield self._body
+            return
 
         # RSGI protocol object is iterable for streaming
         async for chunk in self.protocol:
-             yield chunk
+            yield chunk
 
     # Backwards-compat alias expected by app handler
     async def get_body(self) -> bytes:
@@ -864,23 +952,23 @@ class Request:
             :meth:`get_data`: Primary method for reading raw body
         """
         return await self.get_data()
-    
+
     async def get_json(self) -> Any:
         """Parse request body as JSON asynchronously using msgspec.
-        
+
         Reads and parses the request body as JSON data. The parsing is
         lazy-loaded and cached - subsequent calls return the same parsed data.
-        
+
         Returns:
             Parsed JSON data as Python dict, list, or primitive type.
             Returns None for empty request body.
-            
+
         Raises:
             msgspec.DecodeError: If request body is not valid JSON.
-            
+
         Examples:
             Parse JSON payload:
-            
+
             >>> @app.post("/api/data")
             >>> async def handle_data(request: Request):
             ...     try:
@@ -888,11 +976,11 @@ class Request:
             ...         return {"received": data}
             ...     except msgspec.DecodeError:
             ...         return {"error": "Invalid JSON"}, 400
-            
+
         Note:
             Uses high-performance msgspec decoder.
             Result is cached for subsequent calls.
-            
+
         See Also:
             :meth:`get_form`: Parse form data
             :meth:`get_data`: Get raw request body
@@ -903,35 +991,41 @@ class Request:
                 obj = msgspec.json.decode(data)
                 # Optional max depth validation
                 try:
-                    max_depth = getattr(self, 'max_json_depth', None)
+                    max_depth = getattr(self, "max_json_depth", None)
                 except Exception:
                     max_depth = None
                 if max_depth is not None:
+
                     def _depth(x, d=0):
                         if isinstance(x, (dict, list, tuple)):
                             if d >= int(max_depth):
                                 return d + 1
                             if isinstance(x, dict):
-                                return max([_depth(v, d+1) for v in x.values()] or [d+1])
+                                return max(
+                                    [_depth(v, d + 1) for v in x.values()] or [d + 1]
+                                )
                             else:
-                                return max([_depth(v, d+1) for v in x] or [d+1])
-                        return d+1
+                                return max([_depth(v, d + 1) for v in x] or [d + 1])
+                        return d + 1
+
                     depth = _depth(obj, 0)
                     if depth > int(max_depth):
                         from .errors import BodyValidationError
+
                         raise BodyValidationError("JSON depth exceeds maximum")
                 self._json = obj
             else:
                 self._json = None
         return self._json
-    
+
     async def _parse_multipart_once(self):
         """Parse multipart data once and cache both form and files."""
         if not self._multipart_parsed:
-            content_type = self.headers.get('content-type', '')
-            if 'multipart/form-data' in content_type:
+            content_type = self.headers.get("content-type", "")
+            if "multipart/form-data" in content_type:
                 try:
                     from .multipart import parse_multipart
+
                     data = await self.get_data()
                     form_data, files = parse_multipart(data, content_type)
                     self._form = form_data
@@ -986,18 +1080,18 @@ class Request:
         """
         if self._form is None:
             data = await self.get_data()
-            content_type = self.headers.get('content-type', '')
+            content_type = self.headers.get("content-type", "")
 
-            if data and content_type.startswith('application/x-www-form-urlencoded'):
-                self._form = parse_qs(data.decode('utf-8'))
-            elif 'multipart/form-data' in content_type:
+            if data and content_type.startswith("application/x-www-form-urlencoded"):
+                self._form = parse_qs(data.decode("utf-8"))
+            elif "multipart/form-data" in content_type:
                 # Parse multipart once and cache both form and files
                 await self._parse_multipart_once()
             else:
                 self._form = {}
         return self._form
 
-    async def get_files(self) -> dict[str, 'FileStorage']:
+    async def get_files(self) -> dict[str, "FileStorage"]:
         """Parse uploaded files from multipart/form-data request.
 
         Extracts uploaded files from multipart/form-data requests. Returns a
@@ -1063,8 +1157,8 @@ class Request:
             :func:`secure_filename`: Sanitize filenames
         """
         if self._files is None:
-            content_type = self.headers.get('content-type', '')
-            if 'multipart/form-data' in content_type:
+            content_type = self.headers.get("content-type", "")
+            if "multipart/form-data" in content_type:
                 # Parse multipart once and cache both form and files
                 await self._parse_multipart_once()
             else:
@@ -1072,7 +1166,7 @@ class Request:
         return self._files
 
     @property
-    async def files(self) -> dict[str, 'FileStorage']:
+    async def files(self) -> dict[str, "FileStorage"]:
         """Uploaded files from multipart/form-data request (async property).
 
         Flask/Quart-style property for accessing uploaded files. This is an
@@ -1103,7 +1197,9 @@ class Request:
         return await self.get_files()
 
     # New ergonomic parsers with model decoding and error signaling
-    async def multipart(self, model: type[msgspec.Struct] | None = None, max_size: int | None = None) -> dict[str, list[str]] | msgspec.Struct | None:
+    async def multipart(
+        self, model: type[msgspec.Struct] | None = None, max_size: int | None = None
+    ) -> dict[str, list[str]] | msgspec.Struct | None:
         """Parse multipart/form-data request body (text fields only).
 
         Parses multipart/form-data encoded request bodies, supporting text fields
@@ -1177,18 +1273,19 @@ class Request:
             :meth:`json`: Parse JSON data
         """
         from .errors import UnsupportedMediaType, BodyValidationError
-        ctype = (self.headers.get('content-type') or '').lower()
-        if not ctype.startswith('multipart/form-data'):
+
+        ctype = (self.headers.get("content-type") or "").lower()
+        if not ctype.startswith("multipart/form-data"):
             body = await self.get_body()
             if body:
                 raise UnsupportedMediaType("Expected multipart/form-data body")
             return None if model is None else None
         # Extract boundary
         boundary = None
-        for part in ctype.split(';'):
+        for part in ctype.split(";"):
             part = part.strip()
-            if part.startswith('boundary='):
-                boundary = part.split('=', 1)[1].strip().strip('"')
+            if part.startswith("boundary="):
+                boundary = part.split("=", 1)[1].strip().strip('"')
                 break
         if not boundary:
             raise BodyValidationError("Missing multipart boundary")
@@ -1202,7 +1299,9 @@ class Request:
         endtoken = ("--" + boundary + "--").encode()
         # Ensure the body contains boundary markers
         if btoken not in raw:
-            raise BodyValidationError("Invalid multipart payload: boundary not found in body")
+            raise BodyValidationError(
+                "Invalid multipart payload: boundary not found in body"
+            )
         # Split by boundary; ignore preamble and epilogue
         parts = raw.split(btoken)
         fields: dict[str, list[str]] = {}
@@ -1230,19 +1329,19 @@ class Request:
                     continue
                 k, v = line.split(b":", 1)
                 headers[k.decode().strip().lower()] = v.decode().strip()
-            dispo = headers.get('content-disposition', '')
+            dispo = headers.get("content-disposition", "")
             # Expect: form-data; name="field"; filename="..." (filename optional)
-            if 'form-data' not in dispo:
+            if "form-data" not in dispo:
                 continue
             # Parse disposition params
             parms = {}
-            for p in dispo.split(';'):
+            for p in dispo.split(";"):
                 p = p.strip()
-                if '=' in p and p.split('=')[0] != 'form-data':
-                    key, val = p.split('=', 1)
+                if "=" in p and p.split("=")[0] != "form-data":
+                    key, val = p.split("=", 1)
                     parms[key.strip().lower()] = val.strip().strip('"')
-            name = parms.get('name')
-            filename = parms.get('filename')
+            name = parms.get("name")
+            filename = parms.get("filename")
             if not name:
                 continue
             if filename:
@@ -1250,20 +1349,24 @@ class Request:
                 raise BodyValidationError("File uploads not supported yet")
             # Text field; decode as UTF-8
             try:
-                value = content.decode('utf-8')
+                value = content.decode("utf-8")
             except UnicodeDecodeError:
                 raise BodyValidationError("Invalid UTF-8 in multipart field")
             fields.setdefault(name, []).append(value)
         if model is None:
             return fields
         # Coerce to simple single-value mapping
-        simple = {k: v[-1] if isinstance(v, list) and v else v for k, v in fields.items()}
+        simple = {
+            k: v[-1] if isinstance(v, list) and v else v for k, v in fields.items()
+        }
         try:
             return msgspec.convert(simple, type=model)  # type: ignore[arg-type]
         except Exception as e:
             raise BodyValidationError(str(e))
 
-    async def json(self, model: type[msgspec.Struct] | None = None) -> Any | msgspec.Struct | None:
+    async def json(
+        self, model: type[msgspec.Struct] | None = None
+    ) -> Any | msgspec.Struct | None:
         """Parse the request body as JSON with optional model validation.
 
         Parses JSON request body using high-performance msgspec decoder. Enforces
@@ -1347,11 +1450,14 @@ class Request:
             :meth:`get_json`: Legacy JSON parsing without model support
         """
         from .errors import UnsupportedMediaType, BodyValidationError
+
         # Content-Type check: allow application/json or +json
-        ctype = (self.headers.get('content-type') or '').lower()
-        if ctype and ('application/json' in ctype or ctype.endswith('+json') or '+json;' in ctype):
+        ctype = (self.headers.get("content-type") or "").lower()
+        if ctype and (
+            "application/json" in ctype or ctype.endswith("+json") or "+json;" in ctype
+        ):
             pass
-        elif ctype == '':
+        elif ctype == "":
             # No content type; allow empty only if no body
             body = await self.get_body()
             if body:
@@ -1375,13 +1481,15 @@ class Request:
             else:
                 # Optimized path: single-pass decode and validate using pre-created decoder
                 # Cache the decoder on the model class for reuse across requests
-                if not hasattr(model, '_msgspec_decoder_cache'):
+                if not hasattr(model, "_msgspec_decoder_cache"):
                     model._msgspec_decoder_cache = msgspec.json.Decoder(model)
                 return model._msgspec_decoder_cache.decode(data)
         except (msgspec.DecodeError, msgspec.ValidationError) as e:
             raise BodyValidationError(str(e))
 
-    async def form(self, model: type[msgspec.Struct] | None = None) -> dict[str, list[str]] | msgspec.Struct | None:
+    async def form(
+        self, model: type[msgspec.Struct] | None = None
+    ) -> dict[str, list[str]] | msgspec.Struct | None:
         """Parse application/x-www-form-urlencoded request body with optional model validation.
 
         Parses URL-encoded form data from request body. Enforces Content-Type header
@@ -1467,19 +1575,24 @@ class Request:
             :attr:`args`: Query string parameters
         """
         from .errors import UnsupportedMediaType, BodyValidationError
-        ctype = (self.headers.get('content-type') or '').lower()
-        if ctype and ctype.startswith('application/x-www-form-urlencoded'):
+
+        ctype = (self.headers.get("content-type") or "").lower()
+        if ctype and ctype.startswith("application/x-www-form-urlencoded"):
             pass
-        elif ctype == '':
+        elif ctype == "":
             body = await self.get_body()
             if body:
-                raise UnsupportedMediaType("Expected application/x-www-form-urlencoded body")
+                raise UnsupportedMediaType(
+                    "Expected application/x-www-form-urlencoded body"
+                )
             return None if model is None else None
         else:
             # Wrong content type with possible body
             body = await self.get_body()
             if body:
-                raise UnsupportedMediaType("Expected application/x-www-form-urlencoded body")
+                raise UnsupportedMediaType(
+                    "Expected application/x-www-form-urlencoded body"
+                )
             return None if model is None else None
         # Proper content-type; parse
         try:
@@ -1489,8 +1602,111 @@ class Request:
         if model is None:
             return form
         # Coerce single values (take last for multi)
-        simple = {k: (v[-1] if isinstance(v, list) and v else v) for k, v in form.items()}
+        simple = {
+            k: (v[-1] if isinstance(v, list) and v else v) for k, v in form.items()
+        }
         try:
             return msgspec.convert(simple, type=model)  # type: ignore[arg-type]
         except Exception as e:
             raise BodyValidationError(str(e))
+
+    async def bind(
+        self,
+        model: type[msgspec.Struct],
+        source: str = "auto",
+    ) -> msgspec.Struct:
+        """Bind request input to a typed msgspec model.
+
+        Args:
+            model: Target ``msgspec.Struct`` model type.
+            source: One of ``auto``, ``json``, ``form``, ``multipart``, ``query``.
+
+        Returns:
+            Model instance populated from request data.
+
+        Raises:
+            BodyValidationError: If binding/validation fails.
+            UnsupportedMediaType: If source expects a different content type.
+        """
+        from .errors import BodyValidationError
+
+        def _coerce(payload: Any) -> msgspec.Struct:
+            try:
+                return msgspec.convert(payload, type=model, strict=False)  # type: ignore[arg-type]
+            except Exception as e:
+                raise BodyValidationError(str(e))
+
+        src = (source or "auto").lower()
+        if src not in {"auto", "json", "form", "multipart", "query"}:
+            raise BodyValidationError(
+                "Invalid bind source. Expected one of: auto, json, form, multipart, query"
+            )
+
+        if src == "json":
+            data = await self.json()
+            if data is None:
+                raise BodyValidationError("Empty JSON body")
+            return _coerce(data)
+
+        if src == "form":
+            data = await self.form()
+            if data is None:
+                raise BodyValidationError("Empty form body")
+            simple = {
+                k: (v[-1] if isinstance(v, list) and v else v) for k, v in data.items()
+            }
+            return _coerce(simple)
+
+        if src == "multipart":
+            data = await self.multipart()
+            if data is None:
+                raise BodyValidationError("Empty multipart body")
+            simple = {
+                k: (v[-1] if isinstance(v, list) and v else v) for k, v in data.items()
+            }
+            return _coerce(simple)
+
+        if src == "query":
+            simple = {
+                k: (v[-1] if isinstance(v, list) and v else v)
+                for k, v in self.args.items()
+            }
+            return _coerce(simple)
+
+        # auto source detection
+        ctype = (self.headers.get("content-type") or "").lower()
+        if "application/json" in ctype or ctype.endswith("+json") or "+json;" in ctype:
+            data = await self.json()
+            if data is None:
+                raise BodyValidationError("Empty JSON body")
+            return _coerce(data)
+        if ctype.startswith("application/x-www-form-urlencoded"):
+            data = await self.form()
+            if data is None:
+                raise BodyValidationError("Empty form body")
+            simple = {
+                k: (v[-1] if isinstance(v, list) and v else v) for k, v in data.items()
+            }
+            return _coerce(simple)
+        if ctype.startswith("multipart/form-data"):
+            data = await self.multipart()
+            if data is None:
+                raise BodyValidationError("Empty multipart body")
+            simple = {
+                k: (v[-1] if isinstance(v, list) and v else v) for k, v in data.items()
+            }
+            return _coerce(simple)
+
+        body = await self.get_body()
+        if body:
+            # default to JSON for unknown typed payloads
+            data = await self.json()
+            if data is None:
+                raise BodyValidationError("Empty request body")
+            return _coerce(data)
+
+        # no body -> query params
+        simple = {
+            k: (v[-1] if isinstance(v, list) and v else v) for k, v in self.args.items()
+        }
+        return _coerce(simple)

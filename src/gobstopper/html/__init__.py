@@ -72,6 +72,7 @@ small, span, strong, style, sub, summary, sup, svg, table, tbody, td,
 template, textarea, tfoot, th, thead, **time**, **title**, tr, u, ul, **var**,
 video.
 """
+
 from __future__ import annotations
 
 from ._contexts import Context as Context
@@ -84,6 +85,9 @@ from ._elements import VoidElement as VoidElement
 from ._fragments import Fragment as Fragment
 from ._fragments import comment as comment
 from ._fragments import fragment as fragment
+from ._fragments import raw_html as raw_html
+from ._fragments import raw_js as raw_js
+from ._fragments import raw_css as raw_css
 from ._legacy_rendering import iter_node as iter_node  # pyright: ignore[reportDeprecated]
 from ._legacy_rendering import render_node as render_node  # pyright: ignore[reportDeprecated]
 from ._types import Attribute as Attribute

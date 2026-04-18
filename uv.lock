@@ -449,11 +449,12 @@ wheels = [
 
 [[package]]
 name = "gobstopper"
-version = "0.4.1"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "anyio" },
+    { name = "click" },
     { name = "granian", extra = ["reload"] },
     { name = "loguru" },
     { name = "msgspec" },
@@ -512,6 +513,7 @@ requires-dist = [
     { name = "anyio", specifier = "==4.11.0" },
     { name = "asyncpg", marker = "extra == 'postgres'" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
+    { name = "click", specifier = ">=8.0.0" },
     { name = "click", marker = "extra == 'all'", specifier = ">=8.0.0" },
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.0.0" },
     { name = "duckdb", marker = "extra == 'all'", specifier = ">=0.9.0" },

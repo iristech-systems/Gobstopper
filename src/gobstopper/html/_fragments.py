@@ -42,7 +42,9 @@ class Fragment:
 
     __html__ = __str__
 
-    def iter_chunks(self, context: Mapping[Context[t.Any], t.Any] | None = None) -> Iterator[str]:
+    def iter_chunks(
+        self, context: Mapping[Context[t.Any], t.Any] | None = None
+    ) -> Iterator[str]:
         return iter_chunks_node(self._node, context)
 
     def aiter_chunks(
@@ -72,3 +74,18 @@ fragment = _FragmentGetter()
 def comment(text: str) -> Fragment:
     escaped_text = text.replace("--", "")
     return fragment[markupsafe.Markup(f"<!-- {escaped_text} -->")]
+
+
+def raw_html(html: str) -> Fragment:
+    """Inject trusted raw HTML without escaping."""
+    return fragment[markupsafe.Markup(html)]
+
+
+def raw_js(code: str) -> Fragment:
+    """Inject trusted inline JavaScript without escaping."""
+    return raw_html(f"<script>{code}</script>")
+
+
+def raw_css(code: str) -> Fragment:
+    """Inject trusted inline CSS without escaping."""
+    return raw_html(f"<style>{code}</style>")
